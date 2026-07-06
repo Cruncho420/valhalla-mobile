@@ -300,6 +300,11 @@ jobs:
             - Android AAR compiled with Kotlin 2.1.20 (upstream 0.5.1 used 2.3.0),
               so its Kotlin metadata is readable by Kotlin 2.0.x consumers
               (Expo 54 / React Native 0.81).
+            - Model dependencies pinned to io.github.rallista:valhalla-models(-config)
+              0.0.9 (upstream pinned 0.1.1, which is Kotlin-2.3.0-built and equally
+              unreadable by Kotlin <2.3). AAR consumers must add valhalla-models and
+              valhalla-models-config 0.0.9 (plus osrm-openapi 0.0.10, moshi 1.15.1)
+              to their own dependencies - the AAR does not bundle them.
             - iOS xcframework built with upstream's unchanged pipeline.
             - Valhalla engine submodule UNCHANGED at the 0.5.1 pin (e2f017b).
             - Binaries are consumed directly as release assets; nothing is
