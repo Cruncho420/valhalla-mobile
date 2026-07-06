@@ -1,6 +1,9 @@
 [versions]
 agp = "8.2.2"
-kotlin = "2.3.0"
+# Rods fork: pinned to 2.1.20 (was 2.3.0) so the AAR's Kotlin metadata stays
+# readable by Kotlin 2.0.x consumers (Expo 54 / RN 0.81 uses Kotlin 2.0.x, which
+# can read metadata at most one minor version ahead, i.e. <= 2.1.x).
+kotlin = "2.1.20"
 ktfmt = "0.19.0"
 mavenPublish = "0.29.0"
 dokka = "2.1.0"
