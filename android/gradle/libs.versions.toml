@@ -10,7 +10,14 @@ dokka = "2.1.0"
 core-ktx = "1.13.1"
 moshi = "1.15.1"
 osrm-api = "0.0.10"
-valhallaModels = "0.1.1"
+# Rods fork: pinned to 0.0.9 (was 0.1.1). valhalla-models(-config) 0.1.0 and
+# 0.1.1 are compiled with Kotlin 2.3.0 (metadata unreadable by the 2.1 compiler
+# AND by Kotlin 2.0.x consumers); 0.0.9 carries Kotlin 1.9 metadata with a
+# kotlin-stdlib 2.0.20 dependency. Every model symbol the wrapper uses
+# (RouteRequest.directionsOptions, DirectionsOptions.Format json/gpx/osrm/pbf,
+# RouteResponse, ValhallaConfig) is present and identical in 0.0.9. Consumers
+# of this fork's AAR should likewise depend on valhalla-models 0.0.9.
+valhallaModels = "0.0.9"
 espresso-core = "3.6.1"
 junit = "4.13.2"
 junit-version = "1.2.1"
