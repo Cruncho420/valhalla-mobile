@@ -16,6 +16,22 @@ JNIEXPORT jstring JNICALL Java_com_valhalla_valhalla_ValhallaKotlin_route(JNIEnv
                                                 jstring jRequest,
                                                 jstring jConfigPath);
 
+// ValhallaRaw persistent-actor surface (Rods r3): Android mirror of the Apple
+// create_valhalla_actor / delete_valhalla_actor pair below. Additive; the stock
+// ValhallaKotlin per-call entry point above is unchanged.
+JNIEXPORT jlong JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeCreateActor(JNIEnv *env,
+                                                jobject thiz,
+                                                jstring jConfigPath);
+
+JNIEXPORT jstring JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeRoute(JNIEnv *env,
+                                                jobject thiz,
+                                                jlong jActorHandle,
+                                                jstring jRequest);
+
+JNIEXPORT void JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeDestroyActor(JNIEnv *env,
+                                                jobject thiz,
+                                                jlong jActorHandle);
+
 #ifdef __cplusplus
 }
 #endif

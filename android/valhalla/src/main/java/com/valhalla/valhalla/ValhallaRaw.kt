@@ -10,18 +10,75 @@ package com.valhalla.valhalla
  *
  * This assumes your config path is valid, tiles exist, and your request string is valid JSON.
  *
+ * ### Lifecycle (r3)
+ * The first [route] call lazily creates a persistent native actor (config parse + graph reader,
+ * ~100+ MB for a loaded tile set) and reuses it for subsequent calls. Call [close] to destroy the
+ * native actor deterministically when you are done with the engine — dropping the reference and
+ * waiting for GC is NOT sufficient, because the JVM heap never feels native memory pressure and
+ * repeated re-init cycles can stack native allocations until the OS kills the process.
+ *
+ * - [close] is idempotent: the second and later calls are no-ops.
+ * - After [close], [route] throws [IllegalStateException] instead of touching freed memory.
+ * - Implements [AutoCloseable], so Kotlin `use { }` / Java try-with-resources work.
+ * - [route] and [close] are synchronized: the shared native actor is not thread-safe, and this
+ *   also makes close-while-routing safe (close waits for the in-flight route to finish).
+ *
  * @property configPath Absolute path to a valid valhalla.json configuration file.
  */
-class ValhallaRaw(private val configPath: String) {
+class ValhallaRaw(private val configPath: String) : AutoCloseable {
+  // Instantiating ValhallaKotlin triggers its companion-object System.loadLibrary, which also
+  // resolves this class's external functions (same libvalhalla-wrapper.so). Kept as the fallback
+  // route path when native actor creation fails (see route()).
   private val valhallaKotlin = ValhallaKotlin()
+
+  /** Opaque pointer to the persistent native ValhallaActor; 0 = not created (yet). */
+  private var actorHandle: Long = 0
+
+  private var closed = false
 
   /**
    * Run a route request against the Valhalla routing engine.
    *
    * @param request Raw Valhalla route request JSON.
    * @return Raw Valhalla response JSON (route result, or a Valhalla error response on failure).
+   * @throws IllegalStateException if [close] has already been called.
    */
+  @Synchronized
   fun route(request: String): String {
-    return valhallaKotlin.route(request, configPath)
+    if (closed) throw IllegalStateException("closed")
+    if (actorHandle == 0L) {
+      actorHandle = nativeCreateActor(configPath)
+    }
+    if (actorHandle == 0L) {
+      // Native actor creation failed (e.g. broken config). Fall back to the stock per-call JNI
+      // entry point, which reproduces the pre-r3 behavior exactly: route() always returns JSON
+      // (a Valhalla error response here), never crashes. Nothing is leaked: 0 means no native
+      // allocation survived the failed construction.
+      return valhallaKotlin.route(request, configPath)
+    }
+    return nativeRoute(actorHandle, request)
   }
+
+  /**
+   * Destroy the native actor deterministically. Idempotent — second and later calls are no-ops.
+   * After close, [route] throws [IllegalStateException].
+   */
+  @Synchronized
+  override fun close() {
+    closed = true
+    if (actorHandle != 0L) {
+      val handle = actorHandle
+      actorHandle = 0
+      nativeDestroyActor(handle)
+    }
+  }
+
+  /** Creates a persistent native ValhallaActor. Returns 0 (never throws) on failure. */
+  private external fun nativeCreateActor(configPath: String): Long
+
+  /** Routes against a live actor handle. Returns Valhalla response/error JSON, never throws. */
+  private external fun nativeRoute(actorHandle: Long, request: String): String
+
+  /** Deletes the native ValhallaActor behind [actorHandle]. At most once per handle. */
+  private external fun nativeDestroyActor(actorHandle: Long)
 }
