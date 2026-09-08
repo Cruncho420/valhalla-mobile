@@ -18,6 +18,11 @@ name: Rods Release
 on:
   workflow_dispatch:
     inputs:
+      publish_release:
+        type: boolean
+        description: "Publish a GitHub release after building (false keeps workflow artifacts only)"
+        required: true
+        default: true
       tag_name:
         type: string
         description: "Tag to create the release under"
@@ -262,6 +267,7 @@ jobs:
           path: valhalla-mobile-*.aar
 
   release:
+    if: ${{ inputs.publish_release }}
     needs: [create-xcframework, build-aar]
     runs-on: ubuntu-latest
     permissions:

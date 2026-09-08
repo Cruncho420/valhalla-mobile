@@ -60,6 +60,24 @@ class ValhallaRaw(private val configPath: String) : AutoCloseable {
   }
 
   /**
+   * Map-match a raw trace_route request using the same persistent actor as [route].
+   * Calls the engine's trace_route action; JSON action fields do not select the action.
+   * Returns response/error JSON. Actor creation failure returns an error without routing.
+   * Like [route], this is serialized with all operations, and fails after [close].
+   */
+  @Synchronized
+  fun traceRoute(request: String): String {
+    if (closed) throw IllegalStateException("closed")
+    if (actorHandle == 0L) {
+      actorHandle = nativeCreateActor(configPath)
+    }
+    if (actorHandle == 0L) {
+      return "{\"code\":-1,\"message\":\"Unable to create trace route actor\"}"
+    }
+    return nativeTraceRoute(actorHandle, request)
+  }
+
+  /**
    * Destroy the native actor deterministically. Idempotent — second and later calls are no-ops.
    * After close, [route] throws [IllegalStateException].
    */
@@ -78,6 +96,9 @@ class ValhallaRaw(private val configPath: String) : AutoCloseable {
 
   /** Routes against a live actor handle. Returns Valhalla response/error JSON, never throws. */
   private external fun nativeRoute(actorHandle: Long, request: String): String
+
+  /** Map-matches against a live actor handle. Returns response/error JSON. */
+  private external fun nativeTraceRoute(actorHandle: Long, request: String): String
 
   /** Deletes the native ValhallaActor behind [actorHandle]. At most once per handle. */
   private external fun nativeDestroyActor(actorHandle: Long)

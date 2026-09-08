@@ -56,6 +56,12 @@ public final class Valhalla: ValhallaProviding {
         return try JSONDecoder().decode(RouteResponse.self, from: resultData)
     }
 
+    /// Map-match a trace_route request on the same serialized actor used for routing.
+    /// Returns raw response/error JSON without requiring generated trace request models.
+    public func traceRoute(rawRequest request: String) -> String {
+        actor!.traceRoute(request)
+    }
+
     public func route(rawRequest request: String) -> String {
         actor!.route(request)
     }
