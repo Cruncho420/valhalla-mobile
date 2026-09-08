@@ -266,6 +266,184 @@ jobs:
           name: valhalla-aar
           path: valhalla-mobile-*.aar
 
+  test-ios-trace:
+    if: ${{ !inputs.publish_release }}
+    needs: create-xcframework
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      VALHALLA_MOBILE_DEV: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.4.0"
+      - uses: actions/download-artifact@v4
+        with:
+          name: valhalla-wrapper.xcframework.zip
+          path: native-input
+      - name: Bind tests to this run's native framework
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p build/apple test-evidence/ios
+          shasum -a 256 native-input/valhalla-wrapper.xcframework.zip > test-evidence/ios/artifact.sha256
+          unzip -q native-input/valhalla-wrapper.xcframework.zip -d build/apple
+          test -f build/apple/valhalla-wrapper.xcframework/Info.plist
+          swift package dump-package > test-evidence/ios/package.json
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          evidence = pathlib.Path("test-evidence/ios")
+          manifest = json.loads((evidence / "package.json").read_text())
+          targets = [t for t in manifest["targets"] if t["name"] == "ValhallaWrapper"]
+          assert len(targets) == 1, "Native binary target missing or ambiguous"
+          target = targets[0]
+          assert target["type"] == "binary"
+          assert target.get("path") == "build/apple/valhalla-wrapper.xcframework", target
+          assert not target.get("url"), "Published native binary must never satisfy these tests"
+          (evidence / "source-sha.txt").write_text(os.environ["GITHUB_SHA"] + "\n")
+          devices = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "--json"]))
+          phones = [d for runtime, values in devices["devices"].items() if "iOS-18" in runtime
+                    for d in values if d["name"].startswith("iPhone") and d["isAvailable"]]
+          assert phones, "Xcode 16.4 needs an available iOS 18 iPhone simulator"
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write("TRACE_SIMULATOR_ID=" + phones[0]["udid"] + "\n")
+          PY
+          shasum -a 256 apple/Tests/ValhallaTests/TestTraceRoute.swift > test-evidence/ios/test-source.sha256
+      - name: Run native trace XCTest
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild test -scheme ValhallaMobile -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$TRACE_SIMULATOR_ID" \
+            -only-testing:ValhallaTests/TestTraceRoute \
+            -parallel-testing-enabled NO \
+            -resultBundlePath test-evidence/ios/TraceTests.xcresult \
+            -skipPackagePluginValidation \
+            | tee test-evidence/ios/xcodebuild.log
+          xcrun xcresulttool get test-results tests \
+            --path test-evidence/ios/TraceTests.xcresult > test-evidence/ios/tests.json
+          python3 - <<'PY'
+          import json, pathlib
+          result = json.loads(pathlib.Path("test-evidence/ios/tests.json").read_text())
+          def flatten(nodes):
+              for node in nodes:
+                  yield node
+                  yield from flatten(node.get("children", []))
+          tests = [n for n in flatten(result["testNodes"])
+                   if n.get("name") == "testTraceUsesMapMatchingAndActorSurvivesErrors()"]
+          assert tests, "Expected native trace XCTest did not execute"
+          assert all(t.get("result") == "Passed" for t in tests), tests
+          PY
+      - name: Upload native XCTest evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-trace-test-evidence
+          path: test-evidence/ios
+
+  test-android-trace:
+    if: ${{ !inputs.publish_release }}
+    needs: build-aar
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: gradle
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r29
+          add-to-path: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: valhalla-aar
+          path: native-input
+      - name: Bind tests to this run's packaged JNI libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, zipfile
+          aars = list(pathlib.Path("native-input").glob("*.aar"))
+          assert len(aars) == 1, "Expected exactly this run's AAR"
+          receipt = {"source_sha": os.environ["GITHUB_SHA"], "aar_sha256": hashlib.sha256(aars[0].read_bytes()).hexdigest(), "jni_sha256": {}}
+          with zipfile.ZipFile(aars[0]) as aar:
+              for arch in ("arm64-v8a", "armeabi-v7a", "x86_64", "x86"):
+                  data = aar.read(f"jni/{arch}/libvalhalla-wrapper.so")
+                  assert data.startswith(b"\x7fELF"), arch
+                  assert b"Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceRoute\x00" in data, arch
+                  assert b"Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceAttributes\x00" in data, arch
+                  output = pathlib.Path(f"android/valhalla/src/main/jniLibs/{arch}/libvalhalla-wrapper.so")
+                  output.parent.mkdir(parents=True, exist_ok=True)
+                  output.write_bytes(data)
+                  receipt["jni_sha256"][arch] = hashlib.sha256(data).hexdigest()
+          source = pathlib.Path("android/valhalla/src/androidTest/java/com/valhalla/valhalla/ValhallaRawTraceRouteTest.kt")
+          receipt["test_source_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+          evidence = pathlib.Path("test-evidence/android")
+          evidence.mkdir(parents=True, exist_ok=True)
+          (evidence / "native-input.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          PY
+      - name: Enable emulator acceleration
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run native trace instrumentation tests
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: cd android && ./gradlew :valhalla:connectedDebugAndroidTest --stacktrace -Pandroid.testInstrumentationRunnerArguments.class=com.valhalla.valhalla.ValhallaRawTraceRouteTest
+      - name: Require both native trace tests to have passed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, xml.etree.ElementTree as ET
+          files = list(pathlib.Path("android/valhalla/build/outputs/androidTest-results/connected").rglob("*.xml"))
+          assert files, "No instrumentation result XML"
+          expected = {"traceUsesMapMatchingAndActorSurvivesErrors", "closeIsIdempotentAndRejectsBothActions"}
+          passed = set()
+          for path in files:
+              for test in ET.parse(path).iter("testcase"):
+                  if test.get("classname") == "com.valhalla.valhalla.ValhallaRawTraceRouteTest":
+                      assert not any(test.find(tag) is not None for tag in ("failure", "error", "skipped")), ET.tostring(test)
+                      passed.add(test.get("name"))
+          assert expected <= passed, ("Expected native tests did not execute", expected - passed)
+          PY
+      - name: Upload native instrumentation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-trace-test-evidence
+          path: |
+            test-evidence/android
+            android/valhalla/build/outputs/androidTest-results/connected
+            android/valhalla/build/reports/androidTests/connected
+
   release:
     if: ${{ inputs.publish_release }}
     needs: [create-xcframework, build-aar]

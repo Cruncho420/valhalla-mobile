@@ -100,3 +100,46 @@ finite native scores, edge indices, nonnegative finite distances, and recovery a
 These new entry points and assertions postdate source `2cec28680e4c4b0b0667a606e4e4c9e1644b762e`;
 CI run `34267116238` building that earlier source cannot validate this extension.
 New native builds, symbol checks, and platform test runs remain required.
+
+## Executable platform validation in build-only CI
+
+Dispatch the reviewed workflow revision with `publish_release=false` using the command above.
+Two additional jobs depend on the current run's packaged binaries:
+`test-ios-trace` follows `create-xcframework`, and `test-android-trace` follows `build-aar`.
+Existing publishing jobs and their default behavior are unchanged.
+These jobs require a new workflow run; they do not add tests retroactively to an earlier run.
+
+The iOS job downloads this run's XCFramework zip and unpacks it at the existing local-binary path.
+`VALHALLA_MOBILE_DEV=true` is set for the whole job, including package evaluation and Xcode.
+Before testing, `swift package dump-package` must identify `ValhallaWrapper` as a local binary
+at `build/apple/valhalla-wrapper.xcframework`, with no remote URL.
+The job fails if that condition is not met; it never rewrites `Package.swift`.
+Xcode 16.4 then executes `ValhallaTests/TestTraceRoute` on an available iOS 18 iPhone simulator.
+The result bundle must contain a passed `testTraceUsesMapMatchingAndActorSurvivesErrors()`;
+a successful command with no matching test or a skipped test is not accepted.
+
+The Android job downloads this run's AAR and extracts all four JNI libraries into the source tree.
+It requires ELF binaries exposing both new JNI names, recording each library's hash.
+All four libraries must exist before Gradle runs, so the existing `preBuild` native-build guards
+skip C++ rebuilding and the instrumentation APK consumes this run's native outputs.
+Kotlin wrapper and instrumentation sources are compiled from the same checked-out commit;
+the tests do not substitute classes from a previously published AAR.
+An API 34 x86_64 emulator runs only `ValhallaRawTraceRouteTest` via `connectedDebugAndroidTest`.
+Both named tests must appear as passing in instrumentation XML, without failures, errors, or skips.
+The existing library test application and its bundled config and Andorra tile archive are used unchanged.
+
+Both test checkouts explicitly select `github.sha` and verify their actual HEAD matches it.
+Artifact downloads use the current workflow run, with no external run ID or release lookup.
+`ios-trace-test-evidence` contains the input zip hash, source SHA, test-source hash,
+resolved package description, Xcode log, test JSON, and `.xcresult` bundle.
+`android-trace-test-evidence` contains the input AAR and JNI hashes, source SHA,
+test-source hash, instrumentation XML, and HTML reports.
+These receipts connect the checked-out tests to the native inputs used in the same run;
+retain them alongside the workflow run URL and downloadable binaries.
+
+The jobs execute native map matching, score/evidence assertions, malformed-request recovery,
+ordinary routing after traces, and Android close behavior.
+Android runtime coverage is x86_64 only; the other packaged ABIs receive build validation.
+iOS runtime coverage is the selected simulator only.
+Physical-device behavior and Rods app integration remain separate required checks.
+The workflow definition and its scripts have lightweight validation only until the new run completes.
