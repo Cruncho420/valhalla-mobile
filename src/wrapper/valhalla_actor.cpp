@@ -81,3 +81,7 @@ std::string ValhallaActor::traceRoute(const std::string& request) {
     // Trace requests must enter map matching; route() ignores a JSON action override.
     return actor->trace_route(request);
 }
+
+std::string ValhallaActor::traceAttributes(const std::string& request) {
+    return actor->trace_attributes(request);
+}

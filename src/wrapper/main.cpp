@@ -19,12 +19,14 @@ std::string trace_error_json(int code, const char* message) {
     return std::string(buffer.GetString(), buffer.GetSize());
 }
 
-std::string trace_route_result(const char* request, void* actor) {
+using TraceOperation = std::string (ValhallaActor::*)(const std::string&);
+
+std::string trace_result(const char* request, void* actor, TraceOperation operation) {
     try {
         if (!actor || !request) {
             return trace_error_json(-1, "Trace route requires a live actor and request");
         }
-        return static_cast<ValhallaActor*>(actor)->traceRoute(request);
+        return (static_cast<ValhallaActor*>(actor)->*operation)(request);
     } catch (const valhalla::valhalla_exception_t& error) {
         return trace_error_json(error.code, error.message.c_str());
     } catch (const std::exception& error) {
@@ -150,12 +152,8 @@ Java_com_valhalla_valhalla_ValhallaRaw_nativeDestroyActor(JNIEnv *env,
                                                           jlong jActorHandle) {
     delete reinterpret_cast<ValhallaActor *>(jActorHandle);
 }
-// No temporary actor or route fallback: trace_route is a distinct engine action.
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceRoute(JNIEnv* env,
-                                                     jobject,
-                                                     jlong handle,
-                                                     jstring input) {
+// Both trace actions share JNI ownership and exception handling, without a route fallback.
+static jstring trace_request(JNIEnv* env, jlong handle, jstring input, TraceOperation operation) {
     if (!input) {
         return env->NewStringUTF("{\"code\":-1,\"message\":\"Trace request is null\"}");
     }
@@ -163,7 +161,7 @@ Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceRoute(JNIEnv* env,
     if (!request) return nullptr; // Preserve the JVM's pending allocation exception.
     jstring response = nullptr;
     try {
-        const auto result = trace_route_result(request, reinterpret_cast<void*>(handle));
+        const auto result = trace_result(request, reinterpret_cast<void*>(handle), operation);
         response = env->NewStringUTF(result.c_str());
     } catch (...) {
         // Includes an allocation failure while constructing error JSON.
@@ -172,11 +170,24 @@ Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceRoute(JNIEnv* env,
     env->ReleaseStringUTFChars(input, request);
     return response;
 }
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceRoute(JNIEnv* env, jobject, jlong handle, jstring input) {
+    return trace_request(env, handle, input, &ValhallaActor::traceRoute);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceAttributes(JNIEnv* env, jobject, jlong handle, jstring input) {
+    return trace_request(env, handle, input, &ValhallaActor::traceAttributes);
+}
 // --- end ValhallaRaw JNI surface ------------------------------------------------------------
 
 #elif __APPLE__
 std::string trace_route(const char* request, void* actor) {
-    return trace_route_result(request, actor);
+    return trace_result(request, actor, &ValhallaActor::traceRoute);
+}
+
+std::string trace_attributes(const char* request, void* actor) {
+    return trace_result(request, actor, &ValhallaActor::traceAttributes);
 }
 
 void* create_valhalla_actor(const char *config_path, ValhallaMobileHttpClient* http_client) {

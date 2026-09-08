@@ -16,6 +16,8 @@
 
 - (NSString*)traceRoute:(NSString*)request;
 
+- (NSString*)traceAttributes:(NSString*)request;
+
 @end
 
 #endif /* ValhallaWrapperHeader_h */

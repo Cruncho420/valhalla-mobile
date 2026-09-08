@@ -38,6 +38,7 @@ public:
     
     std::string route(const std::string& request);
     std::string traceRoute(const std::string& request);
+    std::string traceAttributes(const std::string& request);
 };
 
 #endif // VALHALLAACTOR_H

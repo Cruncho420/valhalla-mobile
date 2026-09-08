@@ -175,6 +175,19 @@ public:
     }
 }
 
+- (NSString*)traceAttributes:(NSString*)request
+{
+    @synchronized(self) {
+        try {
+            const auto result = trace_attributes([request UTF8String], _actor);
+            return [NSString stringWithUTF8String:result.c_str()];
+        } catch (...) {
+            // Preserve the same exception barrier as traceRoute, including allocation failures.
+            return @"{\"code\":-1,\"message\":\"Trace response unavailable\"}";
+        }
+    }
+}
+
 - (void) dealloc
 {
     delete_valhalla_actor(_actor);

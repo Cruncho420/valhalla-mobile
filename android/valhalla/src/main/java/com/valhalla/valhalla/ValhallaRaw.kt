@@ -78,6 +78,23 @@ class ValhallaRaw(private val configPath: String) : AutoCloseable {
   }
 
   /**
+   * Return native trace_attributes evidence, including matched points and raw scores.
+   * Scores retain Valhalla semantics; confidence_score is not an acceptance probability.
+   * Uses the same serialized actor and closed-state contract as [traceRoute].
+   */
+  @Synchronized
+  fun traceAttributes(request: String): String {
+    if (closed) throw IllegalStateException("closed")
+    if (actorHandle == 0L) {
+      actorHandle = nativeCreateActor(configPath)
+    }
+    if (actorHandle == 0L) {
+      return "{\"code\":-1,\"message\":\"Unable to create trace attributes actor\"}"
+    }
+    return nativeTraceAttributes(actorHandle, request)
+  }
+
+  /**
    * Destroy the native actor deterministically. Idempotent — second and later calls are no-ops.
    * After close, [route] throws [IllegalStateException].
    */
@@ -99,6 +116,9 @@ class ValhallaRaw(private val configPath: String) : AutoCloseable {
 
   /** Map-matches against a live actor handle. Returns response/error JSON. */
   private external fun nativeTraceRoute(actorHandle: Long, request: String): String
+
+  /** Returns raw trace_attributes response/error JSON. */
+  private external fun nativeTraceAttributes(actorHandle: Long, request: String): String
 
   /** Deletes the native ValhallaActor behind [actorHandle]. At most once per handle. */
   private external fun nativeDestroyActor(actorHandle: Long)

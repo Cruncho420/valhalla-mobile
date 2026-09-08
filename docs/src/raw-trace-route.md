@@ -70,3 +70,33 @@ Record the resulting run URL, checked-out source SHA, and downloaded artifact ha
 A successful build checks compilation and packaging, not device map matching or lifecycle behavior;
 the platform tests above and Rods integration tests still need execution against the rebuilt artifacts.
 This document describes the dispatch procedure and does not record a completed CI run.
+
+## Native match evidence
+
+`ValhallaRaw.traceAttributes(request: String)` and `Valhalla.traceAttributes(rawRequest: String)`
+call `actor_t::trace_attributes` on the same actor, with the same serial execution and error barriers.
+Apple links `trace_attributes(const char*, void*)`; Android uses `nativeTraceAttributes(long, String)`.
+Use `shape_match: "map_snap"` and native JSON output for match evidence.
+The engine's `edge_walk` path supplies a synthetic score tuple and no matched point results.
+The wrapper returns the native response unchanged; it does not calculate an acceptance score.
+
+In the pinned engine, trace-route OSRM confidence is hardcoded to 1.
+Trace-attributes `confidence_score` is also 1 for the best candidate;
+alternatives receive the best raw score divided by their raw score.
+Neither value is a calibrated probability or a replacement for a Mapbox confidence threshold.
+`raw_score` is the native matcher score, and `matched_points` describes individual input samples.
+Matching evidence includes `type` (`matched`, `interpolated`, or `unmatched`), `edge_index`,
+`distance_from_trace_point`, and optional route-discontinuity flags.
+Distance fields are omitted for unmatched points, and discontinuity flags are emitted only when true.
+Consumers must request the needed filters and assess evidence before deciding to accept a GPX trace.
+
+Source references at the unchanged `e2f017b16080f49203de245a211b09efab09cf72` engine pin:
+[score construction](https://github.com/valhalla/valhalla/blob/e2f017b16080f49203de245a211b09efab09cf72/src/thor/trace_route_action.cc#L240),
+[matched-point serialization](https://github.com/valhalla/valhalla/blob/e2f017b16080f49203de245a211b09efab09cf72/src/tyr/trace_serializer.cc#L434),
+and [trace-attributes dispatch](https://github.com/valhalla/valhalla/blob/e2f017b16080f49203de245a211b09efab09cf72/src/thor/trace_attributes_action.cc#L41).
+
+The platform tests explicitly request score and matched-point filters, require multiple matched samples,
+finite native scores, edge indices, nonnegative finite distances, and recovery after malformed JSON.
+These new entry points and assertions postdate source `2cec28680e4c4b0b0667a606e4e4c9e1644b762e`;
+CI run `34267116238` building that earlier source cannot validate this extension.
+New native builds, symbol checks, and platform test runs remain required.

@@ -33,6 +33,11 @@ JNIEXPORT jstring JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceRout
                                                 jlong jActorHandle,
                                                 jstring jRequest);
 
+JNIEXPORT jstring JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceAttributes(JNIEnv *env,
+                                                jobject thiz,
+                                                jlong jActorHandle,
+                                                jstring jRequest);
+
 JNIEXPORT void JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeDestroyActor(JNIEnv *env,
                                                 jobject thiz,
                                                 jlong jActorHandle);
@@ -45,6 +50,7 @@ JNIEXPORT void JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeDestroyActor
 
 std::string route(const char *request, void* actor);
 std::string trace_route(const char *request, void* actor);
+std::string trace_attributes(const char *request, void* actor);
 void* create_valhalla_actor(const char *config_path, ValhallaMobileHttpClient* http_client = nullptr);
 void delete_valhalla_actor(void* actor);
 

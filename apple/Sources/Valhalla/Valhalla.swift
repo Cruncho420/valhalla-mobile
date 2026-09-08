@@ -62,6 +62,11 @@ public final class Valhalla: ValhallaProviding {
         actor!.traceRoute(request)
     }
 
+    /// Return native matched points and raw scores; confidence_score is not a probability.
+    public func traceAttributes(rawRequest request: String) -> String {
+        actor!.traceAttributes(request)
+    }
+
     public func route(rawRequest request: String) -> String {
         actor!.route(request)
     }
