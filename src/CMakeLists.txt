@@ -1,6 +1,9 @@
 # Set the minimum version of CMake that can be used
 cmake_minimum_required(VERSION 3.14)
 
+# Reject an unreviewed core before toolchain or dependency configuration does work.
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/PrepareValhalla.cmake")
+
 # Configure VCPKG
 set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake"
     CACHE STRING "Vcpkg toolchain file")

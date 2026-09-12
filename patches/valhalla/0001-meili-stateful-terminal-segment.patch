@@ -1,0 +1,37 @@
+--- a/src/meili/match_route.cc
++++ b/src/meili/match_route.cc
+@@ -147,17 +147,23 @@
+     const MatchResult& curr_match = match_results[curr_idx];
+     const MatchResult& prev_match = match_results[prev_idx];
+ 
+-    // does the previous match point look further along its edge than the current
+-    bool prev_gt_curr = prev_match.distance_along > curr_match.distance_along + 1e-3;
+-
+-    // if they are on the same edge and previous comes after then its a loop
+-    bool loop = (prev_match.edgeid == curr_match.edgeid) && prev_gt_curr;
+-
+-    // if it is a loop, we start the search after the first edge
+-    for (search_segment += static_cast<size_t>(loop); search_segment != segments.end();
+-         ++search_segment) {
+-      if (search_segment->edgeid == curr_match.edgeid)
+-        break;
++    // A stateful endpoint belongs to the routed transition's terminal segment.
++    // Its single MatchResult edge can instead represent the outgoing transition.
++    if (curr_idx == last_idx && curr_match.HasState()) {
++      search_segment = segments.empty() ? segments.end() : segments.end() - 1;
++    } else {
++      // does the previous match point look further along its edge than the current
++      bool prev_gt_curr = prev_match.distance_along > curr_match.distance_along + 1e-3;
++
++      // if they are on the same edge and previous comes after then its a loop
++      bool loop = (prev_match.edgeid == curr_match.edgeid) && prev_gt_curr;
++
++      // if it is a loop, we start the search after the first edge
++      for (search_segment += static_cast<size_t>(loop); search_segment != segments.end();
++           ++search_segment) {
++        if (search_segment->edgeid == curr_match.edgeid)
++          break;
++      }
+     }
+ 
+     if (search_segment == segments.cend()) {

@@ -1,0 +1,5 @@
+# Reviewed Valhalla core source identity; parsed as data by artifact tooling.
+set(expected_core "e2f017b16080f49203de245a211b09efab09cf72")
+set(original_sha "3f5c4de79072a313d467c0812cd8da22b55986381dc4304004abd4f351a6927f")
+set(patched_sha "8f8db9a3c5725c4c5239d6f2a3d8ec5846d4847b08c2f755fdbc5a0d65dcd858")
+set(patch_sha "3772e63911228090dd7d7f1217e3fa2aac8700d14ce1fc578de06c60ebc1491e")
