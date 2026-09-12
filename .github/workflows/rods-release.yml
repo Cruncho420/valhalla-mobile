@@ -62,7 +62,10 @@ jobs:
         with:
           name: ${{ matrix.arch }}
           path: |
-            build/apple/${{ matrix.arch }}/install
+            build/apple/${{ matrix.arch }}/libvalhalla_all.a
+            build/apple/${{ matrix.arch }}/libvalhalla_all.a.provenance.json
+            build/apple/${{ matrix.arch }}/install/include
+          if-no-files-found: error
 
   create-xcframework:
     needs: build-ios
@@ -82,13 +85,6 @@ jobs:
         with:
           path: build/apple
           pattern: "*ios*"
-
-      - name: Move artifacts to correct locations
-        run: |
-          for arch in arm64-ios arm64-ios-simulator x64-ios-simulator; do
-            mkdir -p build/apple/$arch/install
-            mv build/apple/$arch/* build/apple/$arch/install/ || true
-          done
 
       - name: Create XCFramework
         run: |
@@ -159,7 +155,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: libvalhalla-${{ matrix.arch }}
-          path: android/valhalla/src/main/jniLibs/${{ matrix.arch }}/libvalhalla-wrapper.so
+          path: |
+            android/valhalla/src/main/jniLibs/${{ matrix.arch }}/libvalhalla-wrapper.so
+            android/valhalla/src/main/jniLibs/${{ matrix.arch }}/libvalhalla-wrapper.so.provenance.json
+          if-no-files-found: error
           retention-days: 1
 
   combine-android:
@@ -168,35 +167,30 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@v4
       - name: Download JNI lib artifacts
         uses: actions/download-artifact@v4
         with:
-          path: jniLibs
+          path: build/native-input
           pattern: "libvalhalla-*"
 
       - name: Organize and zip artifacts
         run: |
-          mkdir -p android/valhalla/src/main/jniLibs
-          for arch in arm64-v8a armeabi-v7a x86 x86_64; do
-            mkdir -p android/valhalla/src/main/jniLibs/$arch
-            if [ -f jniLibs/libvalhalla-$arch/libvalhalla-wrapper.so ]; then
-              cp jniLibs/libvalhalla-$arch/libvalhalla-wrapper.so android/valhalla/src/main/jniLibs/$arch/
-            fi
-          done
-          zip -r valhalla-jniLibs.zip android
+          python3 scripts/package_android_native.py combine --repo . \
+            --input-root build/native-input --output build/valhalla-jniLibs.zip
 
       - name: Upload zipped JNI Libs
         uses: actions/upload-artifact@v4
         with:
           name: valhalla-jniLibs
-          path: valhalla-jniLibs.zip
+          path: build/valhalla-jniLibs.zip
+          if-no-files-found: error
           retention-days: 1
 
   # Mirrors upstream's publish-android job setup, but checks out the
   # dispatched ref (not main), stops at assembleRelease, and never touches
   # Maven Central. The combined jniLibs are unzipped into the source tree
-  # first, so the buildValhallaFor-* preBuild hooks are skipped via their
-  # onlyIf { !jniLibs/<arch>/libvalhalla-wrapper.so } guards.
+  # first; the preBuild hooks skip only after source/ABI/receipt verification.
   build-aar:
     needs: combine-android
     runs-on: ubuntu-latest
@@ -214,10 +208,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: valhalla-jniLibs
-          path: .
+          path: build/native-input
 
       - name: Unzip JNI Libs
-        run: unzip -o valhalla-jniLibs.zip
+        run: |
+          python3 scripts/package_android_native.py install --repo . \
+            --archive build/native-input/valhalla-jniLibs.zip
 
       - name: set up JDK 17
         uses: actions/setup-java@v4
@@ -253,21 +249,33 @@ jobs:
         working-directory: android
 
       - name: Verify jniLibs made it into the AAR and rename
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
         run: |
-          ls -la android/valhalla/build/outputs/aar/
-          AAR=$(ls android/valhalla/build/outputs/aar/*-release.aar | head -1)
-          unzip -l "$AAR" | grep -E "jni/.*/libvalhalla-wrapper.so" || (echo "ERROR: jniLibs missing from AAR" && exit 1)
-          unzip -l "$AAR" | grep -c "jni/.*/libvalhalla-wrapper.so"
-          cp "$AAR" "valhalla-mobile-${{ inputs.tag_name }}.aar"
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
+          shopt -s nullglob
+          aars=(android/valhalla/build/outputs/aar/*-release.aar)
+          test "${#aars[@]}" = 1
+          mkdir -p build/release
+          output="build/release/valhalla-mobile-$RELEASE_TAG.aar"
+          test ! -e "$output"
+          cp "${aars[0]}" "$output"
+          python3 scripts/package_android_native.py verify-aar --repo . \
+            --aar "$output" --output "$output.provenance.json" \
+            --strip-tool "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
           name: valhalla-aar
-          path: valhalla-mobile-*.aar
+          path: |
+            build/release/valhalla-mobile-*.aar
+            build/release/valhalla-mobile-*.aar.provenance.json
+          if-no-files-found: error
 
   test-ios-trace:
-    if: ${{ !inputs.publish_release }}
     needs: create-xcframework
     runs-on: macos-15
     timeout-minutes: 45
@@ -285,20 +293,22 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: valhalla-wrapper.xcframework.zip
-          path: native-input
+          path: build/trace-native/ios
       - name: Bind tests to this run's native framework
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          mkdir -p build/apple test-evidence/ios
-          shasum -a 256 native-input/valhalla-wrapper.xcframework.zip > test-evidence/ios/artifact.sha256
-          unzip -q native-input/valhalla-wrapper.xcframework.zip -d build/apple
+          mkdir -p build/apple build/test-evidence/ios
+          shasum -a 256 build/trace-native/ios/valhalla-wrapper.xcframework.zip > build/test-evidence/ios/artifact.sha256
+          unzip -q build/trace-native/ios/valhalla-wrapper.xcframework.zip -d build/apple
           test -f build/apple/valhalla-wrapper.xcframework/Info.plist
-          swift package dump-package > test-evidence/ios/package.json
+          python3 scripts/verify_apple_package.py --repo "$PWD" \
+            --package build/apple/valhalla-wrapper.xcframework
+          swift package dump-package > build/test-evidence/ios/package.json
           python3 - <<'PY'
           import json, os, pathlib, subprocess
-          evidence = pathlib.Path("test-evidence/ios")
+          evidence = pathlib.Path("build/test-evidence/ios")
           manifest = json.loads((evidence / "package.json").read_text())
           targets = [t for t in manifest["targets"] if t["name"] == "ValhallaWrapper"]
           assert len(targets) == 1, "Native binary target missing or ambiguous"
@@ -314,23 +324,29 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a") as env:
               env.write("TRACE_SIMULATOR_ID=" + phones[0]["udid"] + "\n")
           PY
-          shasum -a 256 apple/Tests/ValhallaTests/TestTraceRoute.swift > test-evidence/ios/test-source.sha256
+          shasum -a 256 apple/Tests/ValhallaTests/TestTraceRoute.swift > build/test-evidence/ios/test-source.sha256
       - name: Run native trace XCTest
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p build/test-evidence/ios/raw
+          export TEST_RUNNER_VALHALLA_TRACE_SOURCE_DIR="$PWD/android/valhalla/src/androidTest/assets/trace-evidence"
+          export TEST_RUNNER_VALHALLA_TRACE_EVIDENCE_DIR="$PWD/build/test-evidence/ios/raw"
+          test_status=0
           xcodebuild test -scheme ValhallaMobile -sdk iphonesimulator \
             -destination "platform=iOS Simulator,id=$TRACE_SIMULATOR_ID" \
             -only-testing:ValhallaTests/TestTraceRoute \
+            -only-testing:ValhallaTests/TestTraceEvidence \
+            -only-testing:ValhallaTests/TestTraceDiscontinuityEvidence \
             -parallel-testing-enabled NO \
-            -resultBundlePath test-evidence/ios/TraceTests.xcresult \
+            -resultBundlePath build/test-evidence/ios/TraceTests.xcresult \
             -skipPackagePluginValidation \
-            | tee test-evidence/ios/xcodebuild.log
+            | tee build/test-evidence/ios/xcodebuild.log || test_status=$?
           xcrun xcresulttool get test-results tests \
-            --path test-evidence/ios/TraceTests.xcresult > test-evidence/ios/tests.json
+            --path build/test-evidence/ios/TraceTests.xcresult > build/test-evidence/ios/tests.json
           python3 - <<'PY'
           import json, pathlib
-          result = json.loads(pathlib.Path("test-evidence/ios/tests.json").read_text())
+          result = json.loads(pathlib.Path("build/test-evidence/ios/tests.json").read_text())
           def flatten(nodes):
               for node in nodes:
                   yield node
@@ -339,16 +355,26 @@ jobs:
                    if n.get("name") == "testTraceUsesMapMatchingAndActorSurvivesErrors()"]
           assert tests, "Expected native trace XCTest did not execute"
           assert all(t.get("result") == "Passed" for t in tests), tests
+          expected = {
+              "testTraceUsesMapMatchingAndActorSurvivesErrors()",
+              "testSyntheticTraceEvidenceAndActorReuse()",
+              "testBoundedOriginalChunksAndSyntheticGaps()",
+              "testPrefixControlsAndActorReuse()",
+          }
+          for name in expected:
+              matches = [n for n in flatten(result["testNodes"]) if n.get("name") == name]
+              assert len(matches) == 1, ("Missing or duplicated XCTest", name, matches)
+              assert matches[0].get("result") == "Passed", matches
           PY
+          exit "$test_status"
       - name: Upload native XCTest evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ios-trace-test-evidence
-          path: test-evidence/ios
+          path: build/test-evidence/ios
 
   test-android-trace:
-    if: ${{ !inputs.publish_release }}
     needs: build-aar
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -372,32 +398,44 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: valhalla-aar
-          path: native-input
+          path: build/trace-native/aar
+      - uses: actions/download-artifact@v4
+        with:
+          name: valhalla-jniLibs
+          path: build/trace-native/jni
       - name: Bind tests to this run's packaged JNI libraries
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/package_android_native.py install --repo . \
+            --archive build/trace-native/jni/valhalla-jniLibs.zip
           python3 - <<'PY'
           import hashlib, json, os, pathlib, zipfile
-          aars = list(pathlib.Path("native-input").glob("*.aar"))
+          aars = list(pathlib.Path("build/trace-native/aar").glob("*.aar"))
           assert len(aars) == 1, "Expected exactly this run's AAR"
-          receipt = {"source_sha": os.environ["GITHUB_SHA"], "aar_sha256": hashlib.sha256(aars[0].read_bytes()).hexdigest(), "jni_sha256": {}}
+          receipt = pathlib.Path(str(aars[0]) + ".provenance.json")
+          assert receipt.is_file(), "Packaged AAR build evidence is missing"
+          native = {"source_sha": os.environ["GITHUB_SHA"], "aar_sha256": hashlib.sha256(aars[0].read_bytes()).hexdigest(), "jni_sha256": {}}
           with zipfile.ZipFile(aars[0]) as aar:
               for arch in ("arm64-v8a", "armeabi-v7a", "x86_64", "x86"):
                   data = aar.read(f"jni/{arch}/libvalhalla-wrapper.so")
                   assert data.startswith(b"\x7fELF"), arch
                   assert b"Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceRoute\x00" in data, arch
                   assert b"Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceAttributes\x00" in data, arch
-                  output = pathlib.Path(f"android/valhalla/src/main/jniLibs/{arch}/libvalhalla-wrapper.so")
-                  output.parent.mkdir(parents=True, exist_ok=True)
-                  output.write_bytes(data)
-                  receipt["jni_sha256"][arch] = hashlib.sha256(data).hexdigest()
-          source = pathlib.Path("android/valhalla/src/androidTest/java/com/valhalla/valhalla/ValhallaRawTraceRouteTest.kt")
-          receipt["test_source_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
-          evidence = pathlib.Path("test-evidence/android")
+                  native["jni_sha256"][arch] = hashlib.sha256(data).hexdigest()
+          evidence = pathlib.Path("build/test-evidence/android")
           evidence.mkdir(parents=True, exist_ok=True)
-          (evidence / "native-input.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          source = pathlib.Path("android/valhalla/src/androidTest/java/com/valhalla/valhalla/ValhallaRawTraceRouteTest.kt")
+          native["test_source_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+          (evidence / "native-input.json").write_text(json.dumps(native, indent=2) + "\n")
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              for key, value in {
+                  "VALHALLA_TRACE_AAR": aars[0].resolve(),
+                  "VALHALLA_TRACE_AAR_RECEIPT": receipt.resolve(),
+                  "VALHALLA_TRACE_APK_RECEIPT": (evidence / "apk-provenance.json").resolve(),
+              }.items():
+                  env.write(str(key) + "=" + str(value) + "\n")
           PY
       - name: Enable emulator acceleration
         shell: bash
@@ -416,7 +454,7 @@ jobs:
           arch: x86_64
           target: google_apis
           disable-animations: true
-          script: cd android && ./gradlew :valhalla:connectedDebugAndroidTest --stacktrace -Pandroid.testInstrumentationRunnerArguments.class=com.valhalla.valhalla.ValhallaRawTraceRouteTest
+          script: bash scripts/run_android_trace_tests.sh
       - name: Require both native trace tests to have passed
         shell: bash
         run: |
@@ -434,19 +472,21 @@ jobs:
                       passed.add(test.get("name"))
           assert expected <= passed, ("Expected native tests did not execute", expected - passed)
           PY
+          python3 scripts/verify_native_test_results.py android \
+            --results android/valhalla/build/outputs/androidTest-results/connected
       - name: Upload native instrumentation evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: android-trace-test-evidence
           path: |
-            test-evidence/android
+            build/test-evidence/android
             android/valhalla/build/outputs/androidTest-results/connected
             android/valhalla/build/reports/androidTests/connected
 
   release:
     if: ${{ inputs.publish_release }}
-    needs: [create-xcframework, build-aar]
+    needs: [create-xcframework, build-aar, test-ios-trace, test-android-trace]
     runs-on: ubuntu-latest
     permissions:
       contents: write

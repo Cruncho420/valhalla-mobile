@@ -1,6 +1,8 @@
 import com.vanniktech.maven.publish.AndroidSingleVariantLibrary
 import com.vanniktech.maven.publish.SonatypeHost
+import java.io.File
 import java.net.URI
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
@@ -15,9 +17,20 @@ plugins {
 android {
     namespace = "com.valhalla.valhalla"
     compileSdk = 34
+    // Keep AGP packaging on the same explicit NDK used by the native build and verifier.
+    System.getenv("ANDROID_NDK_HOME")?.let { selectedNdk ->
+        val properties = Properties()
+        file("$selectedNdk/source.properties").inputStream().use { properties.load(it) }
+        val selectedVersion = properties.getProperty("Pkg.Revision")?.trim()
+        require(!selectedVersion.isNullOrEmpty()) { "Selected NDK has no package revision" }
+        ndkPath = selectedNdk
+        ndkVersion = selectedVersion
+    }
 
     defaultConfig {
         minSdk = 26
+        // The standalone instrumentation APK must not inherit minSdk as its target.
+        targetSdk = 34
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
@@ -41,6 +54,35 @@ android {
 tasks.withType<KotlinCompile>().configureEach {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
+    }
+}
+
+// CI must verify the final instrumented APK before the connected task can install it.
+System.getenv("VALHALLA_TRACE_AAR")?.let { traceAar ->
+    val verifyTraceApk = tasks.register<Exec>("verifyValhallaTraceApk") {
+        dependsOn("packageDebugAndroidTest")
+        doFirst {
+            val repo = rootProject.projectDir.parentFile
+            val ndk = System.getenv("ANDROID_NDK_HOME") ?: error("Trace verification requires NDK")
+            val stripTools = file("$ndk/toolchains/llvm/prebuilt").listFiles()
+                ?.map { File(it, "bin/llvm-strip") }?.filter { it.isFile } ?: emptyList()
+            require(stripTools.size == 1) { "Expected exactly one selected NDK strip tool" }
+            val apks = project.layout.buildDirectory.dir("outputs/apk/androidTest/debug").get()
+                .asFile.listFiles()?.filter { it.isFile && it.extension == "apk" } ?: emptyList()
+            require(apks.size == 1) { "Expected exactly one trace instrumentation APK" }
+            val proof = System.getenv("VALHALLA_TRACE_AAR_RECEIPT")
+                ?: error("Trace verification requires the AAR receipt")
+            val output = System.getenv("VALHALLA_TRACE_APK_RECEIPT")
+                ?: error("Trace verification requires an APK receipt output")
+            commandLine("python3", File(repo, "scripts/verify_android_test_apk.py").absolutePath,
+                "--repo", repo.absolutePath, "--aar", traceAar, "--aar-receipt", proof,
+                "--apk", apks.single().absolutePath, "--strip-tool", stripTools.single().absolutePath,
+                "--output", output)
+        }
+    }
+    // AGP registers the connected task after this script; configure lazily.
+    tasks.matching { it.name == "connectedDebugAndroidTest" }.configureEach {
+        dependsOn(verifyTraceApk)
     }
 }
 
@@ -99,7 +141,22 @@ archs.forEach { arch ->
         commandLine("bash", "./build.sh", "--android", arch)
 
         onlyIf {
-            !file("src/main/jniLibs/${arch}/libvalhalla-wrapper.so").exists()
+            // Existing JNI bytes need independent source and ABI proof before reuse.
+            val nativeRoot = workingDir.absolutePath
+            val verification = project.exec {
+                commandLine(
+                    "python3",
+                    "$nativeRoot/scripts/verify_native_prebuilt.py",
+                    "--repo", nativeRoot,
+                    "--abi", arch,
+                )
+                isIgnoreExitValue = true
+            }.exitValue
+            when (verification) {
+                0 -> false
+                10 -> true
+                else -> throw GradleException("Native prebuilt provenance verification failed for $arch")
+            }
         }
     }
 }

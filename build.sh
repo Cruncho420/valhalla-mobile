@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Fail on any error
-set -e
+set -euo pipefail
 
 ios_archs=("arm64-ios" "arm64-ios-simulator" "x64-ios-simulator")
 android_archs=("arm64-v8a" "armeabi-v7a" "x86_64" "x86")
@@ -53,7 +53,7 @@ else
   # If VCPKG_ROOT is not set and vcpkg directory doesn't exist locally
   if [ -z "${VCPKG_ROOT+x}" ]; then
     echo "VCPKG_ROOT is not set and vcpkg directory not found in the current working directory."
-    echo "Review setup in README.md or export a custom $VCPKG_ROOT."
+    echo 'Review setup in README.md or export a custom $VCPKG_ROOT.'
     exit 1
   fi
 fi
@@ -68,11 +68,19 @@ while [[ $# -gt 0 ]]; do
             platform=$1
             ;;
         --ios)
+            if [ $# -lt 2 ]; then
+                echo "Error: --ios requires an architecture."
+                exit 1
+            fi
             platform="ios"
             arch=$2
             shift
             ;;
         --android)
+            if [ $# -lt 2 ]; then
+                echo "Error: --android requires an architecture."
+                exit 1
+            fi
             platform="android"
             arch=$2
             shift
@@ -88,25 +96,31 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-# if the first argument is clean, then clean the build directory
-if [ "$2" == "clean" ]; then
-    if [ "$1" == "ios" ]; then
-        echo "Cleaning the iOS build directory..."
-        rm -rf build/apple
-    elif [ "$1" == "android" ]; then
-        echo "Cleaning the Android build directory..."
-        rm -rf build/android
-    else
-        echo "Cleaning the build directory..."
-        rm -rf build
+# Validate before cleanup so malformed requests cannot remove a usable build.
+if [ -z "$platform" ]; then
+    echo "Error: specify ios, android, or all."
+    exit 1
+fi
+if [ -n "$arch" ]; then
+    valid_arch=false
+    if [ "$platform" == "ios" ]; then
+        for candidate in "${ios_archs[@]}"; do
+            if [ "$arch" == "$candidate" ]; then valid_arch=true; fi
+        done
+    elif [ "$platform" == "android" ]; then
+        for candidate in "${android_archs[@]}"; do
+            if [ "$arch" == "$candidate" ]; then valid_arch=true; fi
+        done
+    fi
+    if ! $valid_arch; then
+        echo "Error: invalid architecture for $platform: $arch"
+        exit 1
     fi
 fi
 
 # Handle cleaning
-if $clean_all; then
-    echo "Cleaning all build directories..."
-    rm -rf build
-elif $clean; then
+# An unset command variable evaluates successfully in Bash; never use one as a clean flag.
+if $clean; then
     if [ "$platform" == "ios" ]; then
         echo "Cleaning the iOS build directory..."
         rm -rf build/apple

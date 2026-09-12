@@ -126,7 +126,12 @@ Kotlin wrapper and instrumentation sources are compiled from the same checked-ou
 the tests do not substitute classes from a previously published AAR.
 An API 34 x86_64 emulator runs only `ValhallaRawTraceRouteTest` via `connectedDebugAndroidTest`.
 Both named tests must appear as passing in instrumentation XML, without failures, errors, or skips.
-The existing library test application and its bundled config and Andorra tile archive are used unchanged.
+The existing library test application and Andorra tile archive are retained.
+Test setup resolves the fixture's tile-extract path from the actual Android sandbox.
+Typed routing tests decode that fixture with Moshi and the pinned 0.0.9 model;
+that dependency does not provide the newer `ValhallaConfigBuilder`.
+The standalone instrumentation APK explicitly targets API 34 rather than inheriting minimum API 26,
+so current devices can install it without overriding old-target protections.
 
 Both test checkouts explicitly select `github.sha` and verify their actual HEAD matches it.
 Artifact downloads use the current workflow run, with no external run ID or release lookup.
@@ -143,3 +148,15 @@ Android runtime coverage is x86_64 only; the other packaged ABIs receive build v
 iOS runtime coverage is the selected simulator only.
 Physical-device behavior and Rods app integration remain separate required checks.
 The workflow definition and its scripts have lightweight validation only until the new run completes.
+
+## Android typed-config compatibility
+
+Models 0.0.9 omit two fields that pinned core `e2f017b` requires during actor construction:
+`loki.service_defaults.mvt_min_zoom_road_class` and `mvt_cache_min_zoom`.
+`ValhallaConfigManager` restores only missing keys after the caller's Moshi adapter serializes the config,
+using `[7, 7, 8, 11, 11, 12, 13, 14]` and `11` from that pin's `scripts/valhalla_build_config`.
+Existing serialized values and extension fields are preserved, including custom-adapter output.
+Missing or nonobject config branches are written unchanged for native validation.
+Raw config files and the C++ wrapper are unchanged.
+Instrumentation config tests check the real model/file roundtrip and custom-field preservation;
+the typed JSON/OSRM routing tests remain the actual-engine validation gate.

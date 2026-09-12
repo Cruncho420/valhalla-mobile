@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# A rejected configuration must never fall through into a stale native build.
+set -e
+
 #
 # 1. Check the presence of required environment variables
 #
@@ -16,9 +19,9 @@ fi
 #
 # 2. Set the path to the toolchains
 #
-vcpkg_toolchain_file=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
-android_toolchain_file=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake
-vcpkg_triplet_overlay=`pwd`/triplets
+vcpkg_toolchain_file="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+android_toolchain_file="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+vcpkg_triplet_overlay="$(pwd)/triplets"
 
 # Check if the first argument is a valid Apple architecture
 if [ "$1" == "arm64-v8a" ]; then
@@ -38,18 +41,41 @@ else
     exit 1
 fi
 
-export BUILD_DIR=`pwd`/build/android/$android_abi/wrapper
-wrapper_dir=`pwd`/src
+repo_root="$(pwd)"
+export BUILD_DIR="$repo_root/build/android/$android_abi/wrapper"
+wrapper_dir="$repo_root/src"
+provenance="$repo_root/scripts/native_artifact_provenance.py"
+provenance_clean=()
+if [ "${CI:-false}" != "false" ] && [ -n "${CI:-}" ] && [ "${CI:-}" != "0" ]; then
+    provenance_clean=(--require-clean)
+fi
 
 # Move to the build directory
-mkdir -p $BUILD_DIR && cd $BUILD_DIR
+mkdir -p "$BUILD_DIR"
+cd "$BUILD_DIR"
 
+# Record the selected NDK compiler even when its toolchain uses a non-cache variable.
+android_cxx_compilers=("$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/clang++)
+test "${#android_cxx_compilers[@]}" -eq 1
+test -x "${android_cxx_compilers[0]}"
 # vcpkg will install everything during cmake configuration
-cmake -DCMAKE_TOOLCHAIN_FILE=$vcpkg_toolchain_file \
-    -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$android_toolchain_file \
-    -DVCPKG_OVERLAY_TRIPLETS=$vcpkg_triplet_overlay \
-    -DVCPKG_TARGET_TRIPLET=$vcpkg_target_triplet \
-    -DANDROID_ABI=$android_abi \
-    -S $wrapper_dir \
+cmake -DCMAKE_TOOLCHAIN_FILE="$vcpkg_toolchain_file" \
+    -DCMAKE_CXX_COMPILER:FILEPATH="${android_cxx_compilers[0]}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$android_toolchain_file" \
+    -DVCPKG_OVERLAY_TRIPLETS="$vcpkg_triplet_overlay" \
+    -DVCPKG_TARGET_TRIPLET="$vcpkg_target_triplet" \
+    -DANDROID_ABI="$android_abi" \
+    -S "$wrapper_dir" \
     -B .
+python3 "$provenance" source --repo "$repo_root" \
+    --manifest "$repo_root/patches/valhalla/manifest.cmake" \
+    --output "$BUILD_DIR/native-source.json" --replace "${provenance_clean[@]}"
 cmake --build . --config Release -- -j$(nproc)
+python3 "$provenance" emit --repo "$repo_root" \
+    --manifest "$repo_root/patches/valhalla/manifest.cmake" \
+    --source "$BUILD_DIR/native-source.json" --abi "$android_abi" \
+    --binary "$BUILD_DIR/wrapper/libvalhalla-wrapper.so" \
+    --cmake-cache "$BUILD_DIR/CMakeCache.txt" \
+    --output "$BUILD_DIR/wrapper/libvalhalla-wrapper.so.provenance.json" \
+    --replace "${provenance_clean[@]}"

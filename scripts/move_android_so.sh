@@ -1,17 +1,40 @@
 #!/bin/bash
+set -euo pipefail
+
+repo_root="$(pwd)"
+staging=""
+cleanup() {
+    if [ -n "$staging" ]; then rm -rf "$staging"; fi
+}
+trap cleanup EXIT
 
 move_arch() {
     local arch=$1
     local src_dir="build/android/$arch/wrapper/wrapper"
     local dest_dir="android/valhalla/src/main/jniLibs/$arch"
+    local binary="libvalhalla-wrapper.so"
+    local receipt="$binary.provenance.json"
 
-    mkdir -p "$dest_dir"
-    if [ -f "$src_dir/libvalhalla-wrapper.so" ]; then
-        mv "$src_dir/libvalhalla-wrapper.so" "$dest_dir/"
-        echo "Moved $arch libvalhalla-wrapper.so"
-    else
-        echo "Warning: $arch libvalhalla-wrapper.so not found"
+    if [ ! -f "$src_dir/$binary" ] || [ ! -f "$src_dir/$receipt" ]; then
+        echo "Error: native output and provenance are required for $arch" >&2
+        return 1
     fi
+    python3 "$repo_root/scripts/verify_native_prebuilt.py" \
+        --repo "$repo_root" --binary "$repo_root/$src_dir/$binary" --abi "$arch"
+
+    # Stage in the ignored build tree so local source identity does not change.
+    # Keep the original build output available for validated incremental builds.
+    staging="$(mktemp -d "$repo_root/build/android/$arch/.native-install.XXXXXX")"
+    cp "$src_dir/$binary" "$staging/$binary"
+    cp "$src_dir/$receipt" "$staging/$receipt"
+    python3 "$repo_root/scripts/verify_native_prebuilt.py" \
+        --repo "$repo_root" --binary "$staging/$binary" --abi "$arch"
+    mkdir -p "$dest_dir"
+    mv "$staging/$binary" "$dest_dir/$binary"
+    mv "$staging/$receipt" "$dest_dir/$receipt"
+    rmdir "$staging"
+    staging=""
+    echo "Installed verified $arch native library and provenance"
 }
 
 # The architectures that exist for android and can be moved.
@@ -26,9 +49,12 @@ if [ $# -eq 1 ]; then
         echo "Error: Invalid architecture. Supported architectures are: ${architectures[*]}"
         exit 1
     fi
-else
+elif [ $# -eq 0 ]; then
     # If no argument is provided, move all architectures
     for arch in "${architectures[@]}"; do
         move_arch "$arch"
     done
+else
+    echo "Error: expected zero or one architecture argument" >&2
+    exit 1
 fi

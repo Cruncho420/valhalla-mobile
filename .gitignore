@@ -28,6 +28,11 @@ DerivedData/
 valhalla-wrapper.xcframework
 valhalla-wrapper.xcframework.zip
 libvalhalla-wrapper.so
+# Build-generated attestations travel with JNI artifacts, not source commits.
+/android/valhalla/src/main/jniLibs/*/libvalhalla-wrapper.so.provenance.json
+
+# Local Python test and build-tool caches are not build inputs.
+__pycache__/
 
 # Openapi temp
 .openapi-temp
