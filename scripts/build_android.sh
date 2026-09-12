@@ -71,7 +71,10 @@ cmake -DCMAKE_TOOLCHAIN_FILE="$vcpkg_toolchain_file" \
 python3 "$provenance" source --repo "$repo_root" \
     --manifest "$repo_root/patches/valhalla/manifest.cmake" \
     --output "$BUILD_DIR/native-source.json" --replace "${provenance_clean[@]}"
-cmake --build . --config Release -- -j$(nproc)
+# macOS has no nproc; an empty -j is unbounded and oversubscribes the host.
+build_jobs="${NPROC:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null)}"
+test -n "$build_jobs"
+cmake --build . --config Release -- "-j$build_jobs"
 python3 "$provenance" emit --repo "$repo_root" \
     --manifest "$repo_root/patches/valhalla/manifest.cmake" \
     --source "$BUILD_DIR/native-source.json" --abi "$android_abi" \
