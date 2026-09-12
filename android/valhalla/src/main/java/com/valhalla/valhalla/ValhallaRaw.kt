@@ -16,12 +16,11 @@ package com.valhalla.valhalla
  * native actor deterministically when you are done with the engine — dropping the reference and
  * waiting for GC is NOT sufficient, because the JVM heap never feels native memory pressure and
  * repeated re-init cycles can stack native allocations until the OS kills the process.
- *
  * - [close] is idempotent: the second and later calls are no-ops.
  * - After [close], [route] throws [IllegalStateException] instead of touching freed memory.
  * - Implements [AutoCloseable], so Kotlin `use { }` / Java try-with-resources work.
- * - [route] and [close] are synchronized: the shared native actor is not thread-safe, and this
- *   also makes close-while-routing safe (close waits for the in-flight route to finish).
+ * - [route] and [close] are synchronized: the shared native actor is not thread-safe, and this also
+ *   makes close-while-routing safe (close waits for the in-flight route to finish).
  *
  * @property configPath Absolute path to a valid valhalla.json configuration file.
  */
@@ -60,10 +59,10 @@ class ValhallaRaw(private val configPath: String) : AutoCloseable {
   }
 
   /**
-   * Map-match a raw trace_route request using the same persistent actor as [route].
-   * Calls the engine's trace_route action; JSON action fields do not select the action.
-   * Returns response/error JSON. Actor creation failure returns an error without routing.
-   * Like [route], this is serialized with all operations, and fails after [close].
+   * Map-match a raw trace_route request using the same persistent actor as [route]. Calls the
+   * engine's trace_route action; JSON action fields do not select the action. Returns
+   * response/error JSON. Actor creation failure returns an error without routing. Like [route],
+   * this is serialized with all operations, and fails after [close].
    */
   @Synchronized
   fun traceRoute(request: String): String {
@@ -78,9 +77,9 @@ class ValhallaRaw(private val configPath: String) : AutoCloseable {
   }
 
   /**
-   * Return native trace_attributes evidence, including matched points and raw scores.
-   * Scores retain Valhalla semantics; confidence_score is not an acceptance probability.
-   * Uses the same serialized actor and closed-state contract as [traceRoute].
+   * Return native trace_attributes evidence, including matched points and raw scores. Scores retain
+   * Valhalla semantics; confidence_score is not an acceptance probability. Uses the same serialized
+   * actor and closed-state contract as [traceRoute].
    */
   @Synchronized
   fun traceAttributes(request: String): String {

@@ -7,9 +7,7 @@ import com.valhalla.api.models.CostingModel
 import com.valhalla.api.models.DirectionsOptions
 import com.valhalla.api.models.RouteRequest
 import com.valhalla.api.models.RoutingWaypoint
-import com.valhalla.config.ValhallaConfigBuilder
 import com.valhalla.valhalla.config.ValhallaConfigManager
-import com.valhalla.valhalla.files.ValhallaFile
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.fail
@@ -29,8 +27,7 @@ class ValhallaJsonFormatTileTarTest {
     appContext = InstrumentationRegistry.getInstrumentation().targetContext
     configManager = ValhallaConfigManager(appContext)
 
-    val tarFile = ValhallaFile.usingAsset(appContext, "valhalla_tiles.tar")
-    val config = ValhallaConfigBuilder().withTileExtract(tarFile.absolutePath()).build()
+    val config = TestFileUtils.getConfig(appContext)
 
     valhalla = Valhalla(appContext, config, configManager)
   }
