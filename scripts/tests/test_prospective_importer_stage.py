@@ -17,12 +17,14 @@ class ImporterStageTests(unittest.TestCase):
         self.assertEqual(len(rows), 22)
         entries = capture.combined_entries(ROOT / 'test-fixtures/prospective-v1')
         self.assertEqual(len(entries), 283)
-        for (_, staged), source in zip(entries[261:], rows):
+        for (_, staged), source in zip(entries[143:165], rows):
             for key in ('fixtureId', 'variant', 'split', 'sourcePointCount', 'selectedPointCount',
                         'action', 'windowIndex', 'window', 'sourceInputIndices'):
                 self.assertEqual(staged[key], source[key])
             self.assertEqual(staged['request'], source['request'])
             self.assertEqual(staged['group'], 'importer-v1')
+        self.assertEqual([row['action'] for _, row in entries[:165]], ['trace_attributes'] * 165)
+        self.assertEqual([row['action'] for _, row in entries[165:]], ['trace_route'] * 118)
 
     def test_changed_index_authority_action_or_identity_is_refused(self):
         for mutation in ('index', 'source-count', 'action', 'duplicate', 'authority'):

@@ -20,7 +20,7 @@ class TripStageTests(unittest.TestCase):
         self.assertEqual(capture.CAPTURE_FILES,569)
         self.assertEqual(sum(row.get('action','trace_attributes')=='trace_attributes' for _,row in entries),165)
         self.assertEqual(sum(row.get('action')=='trace_route' for _,row in entries),118)
-        for (_,entry),row in zip(entries[143:],rows):
+        for (_,entry),row in zip(entries[165:],rows):
             for key in ('fixtureId','variant','split','action','windowIndex','window','sourceInputIndices'):
                 self.assertEqual(entry[key],row[key])
             raw=(ROOT/'test-fixtures/prospective-trip-v1'/row['request']['file']).read_bytes()
@@ -28,6 +28,8 @@ class TripStageTests(unittest.TestCase):
             self.assertEqual(set(request),{'shape','costing','shape_match'})
             self.assertEqual(row['sourceInputIndices'],list(range(len(request['shape']))))
             self.assertEqual(entry['sourceGroup'],row['group'])
+        self.assertEqual([row['action'] for _, row in entries[:165]], ['trace_attributes'] * 165)
+        self.assertEqual([row['action'] for _, row in entries[165:]], ['trace_route'] * 118)
 
     def test_collectors_dispatch_the_pinned_action_without_translation(self):
         swift=(ROOT/'apple/Tests/ValhallaTests/TestProspectiveTraceCapture.swift').read_text()

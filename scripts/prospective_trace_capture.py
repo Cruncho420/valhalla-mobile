@@ -45,10 +45,10 @@ GROUPS = [dict(id='single-window-v1', manifestSha256=REQUEST_SHA,
           dict(id='composite-v1', manifestSha256=COMPOSITE_SHA,
                requestContractSha256=COMPOSITE_CONTRACT,
                stageContractSha256=COMPOSITE_STAGE_CONTRACT, requestCount=33),
-          dict(id='trip-v1', manifestSha256=TRIP_SHA,
-               requestContractSha256=TRIP_CONTRACT, action='trace_route', requestCount=118),
           dict(id='importer-v1', manifestSha256=IMPORTER_SHA,
-               requestContractSha256=IMPORTER_CONTRACT, action='trace_attributes', requestCount=22)]
+               requestContractSha256=IMPORTER_CONTRACT, action='trace_attributes', requestCount=22),
+          dict(id='trip-v1', manifestSha256=TRIP_SHA,
+               requestContractSha256=TRIP_CONTRACT, action='trace_route', requestCount=118)]
 REQUEST_COUNT = 283
 CAPTURE_FILES = 2 * REQUEST_COUNT + 3
 MAX_RESPONSE = 1024 * 1024
@@ -211,8 +211,8 @@ def combined_entries(single_root):
     importer_root = ROOT / 'test-fixtures/prospective-importer-v1'
     groups = [('single-window-v1', single_root, admit_requests(single_root)),
               ('composite-v1', composite_root, admit_composite_requests(composite_root)),
-              ('trip-v1', trip_root, admit_trip_requests(trip_root)),
-              ('importer-v1', importer_root, admit_importer_requests(importer_root))]
+              ('importer-v1', importer_root, admit_importer_requests(importer_root)),
+              ('trip-v1', trip_root, admit_trip_requests(trip_root))]
     entries = []
     for group_id, root, rows in groups:
         for row in rows:
@@ -225,6 +225,10 @@ def combined_entries(single_root):
                 entry['windowIndex'] = 0
             entries.append((root, entry))
     require(len(entries) == REQUEST_COUNT)
+    # Keep all attribute calls contiguous before whole-trip calls. The native
+    # receipt binds this order, so totals alone must not admit a reordered plan.
+    require([row['action'] for _, row in entries[:165]] == ['trace_attributes'] * 165)
+    require([row['action'] for _, row in entries[165:]] == ['trace_route'] * 118)
     return entries
 
 

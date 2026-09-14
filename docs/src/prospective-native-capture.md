@@ -85,8 +85,9 @@ The combined capture is now exactly 283 calls: 165 `trace_attributes` calls foll
 whole-trip `trace_route` calls. Both native collectors choose the actual `trace_attributes` wrapper
 operation for this group while retaining the one-request schema; missing, repeated, reordered,
 byte-changed, action-changed, or source-index-changed inputs are refused by the host before native
-execution. This extends source preparation only. It neither admits importer outcomes nor establishes
-consumer, user-device, or production behavior.
+execution. Host admission asserts the two contiguous action ranges, so matching action totals in a
+reordered plan cannot satisfy the contract. This extends source preparation only.
+It neither admits importer outcomes nor establishes consumer, user-device, or production behavior.
 
 ## Exact source graph
 
