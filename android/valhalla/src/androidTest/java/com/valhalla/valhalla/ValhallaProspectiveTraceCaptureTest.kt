@@ -52,14 +52,17 @@ class ValhallaProspectiveTraceCaptureTest {
     requireCapture(digest(stage) == expectedStage)
     val plan = JSONObject(stage.toString(Charsets.UTF_8))
     val rows = plan.getJSONArray("rows")
-    requireCapture(rows.length() == 261)
+    requireCapture(rows.length() == 283)
     val graph = read(File(root, "graph.tar"), 4194304)
     requireCapture(digest(graph) == "c0957c92bb71833ed3763e4b2c42a536cb28f2bcb69c991264532485edee75d4")
     val requests = (0 until rows.length()).map { index ->
       val row = rows.getJSONObject(index)
       val action = row.getString("action")
       requireCapture(action == "trace_attributes" || action == "trace_route")
-      val kind = if (action == "trace_attributes") "diagnostic" else "request"
+      // Imported recordings are exact post-resampling requests, so unlike the
+      // reviewed diagnostic cohort they have no invented "original" twin.
+      val kind =
+          if (action == "trace_route" || row.has("request")) "request" else "diagnostic"
       val item = row.getJSONObject(kind)
       val name = "%03d.%s.json".format(index, kind)
       requireCapture(item.getString("file") == name)

@@ -46,7 +46,7 @@ final class TestProspectiveTraceCapture: XCTestCase {
         let stage = try read(root.appendingPathComponent("stage.json"), limit: 262144)
         guard digest(stage) == expectedStage,
               let plan = try JSONSerialization.jsonObject(with: stage) as? [String: Any],
-              let rows = plan["rows"] as? [[String: Any]], rows.count == 261 else { throw refuse() }
+              let rows = plan["rows"] as? [[String: Any]], rows.count == 283 else { throw refuse() }
         let graph = try read(root.appendingPathComponent("graph.tar"), limit: 4194304)
         guard digest(graph) == "c0957c92bb71833ed3763e4b2c42a536cb28f2bcb69c991264532485edee75d4" else {
             throw refuse()
@@ -56,7 +56,11 @@ final class TestProspectiveTraceCapture: XCTestCase {
         for (index, row) in rows.enumerated() {
             guard let action = row["action"] as? String,
                   action == "trace_attributes" || action == "trace_route" else { throw refuse() }
-            let kind = action == "trace_attributes" ? "diagnostic" : "request"
+            // Imported recordings are exact post-resampling requests, so unlike the
+            // reviewed diagnostic cohort they have no invented "original" twin.
+            let kind = action == "trace_route" || row["request"] != nil
+                ? "request"
+                : "diagnostic"
             guard let item = row[kind] as? [String: Any],
                   item["file"] as? String == String(format: "%03d.%@.json", index, kind),
                   let expected = item["sha256"] as? String else { throw refuse() }

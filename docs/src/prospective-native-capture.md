@@ -61,9 +61,32 @@ the host refuses changed bytes, a changed action, a missing/duplicate/reordered 
 The staged row preserves the source group separately from its global capture index, and the collectors
 dispatch `trace_route` only for this group rather than translating it into `trace_attributes`.
 
-The combined capture is exactly 261 calls: the original 143 `trace_attributes` calls followed by
-these 118 whole-trip `trace_route` calls. It is source preparation and raw-native-return evidence only:
-it neither accepts map-matching outcomes nor establishes consumer, user-device, or production behavior.
+Before the importer group below, the combined cohort contained the original 143 `trace_attributes`
+calls followed by these 118 whole-trip `trace_route` calls. That earlier cohort was source preparation
+and raw-native-return evidence only; it did not accept map-matching outcomes or establish consumer,
+user-device, or production behavior.
+
+## Frozen importer attribute authority
+
+`test-fixtures/prospective-importer-v1/manifest.json` is a fourth, additive input group containing
+the 22 `trace_attributes` windows which the original source-only importer inventory found were not
+represented by either earlier attributes group. Its exact manifest SHA-256 is
+`4c77cc83d895188a80c74c1554908f497916bee49c352d79b520c62627191877`, and its production
+`JSON.stringify` request-contract SHA-256 is
+`a56e32a5fa31dcbfa8e45fb88075742afda942c3b0c3c14c0593347941b4af10`.
+Every row retains the original fixture, split, resampled recording length, selected-window bounds,
+and strictly increasing original source indices. The request bytes come from the immutable importer
+inventory SHA-256 `9ce80de6477a62eb80a2a95a33c5a01a3b1a7ee2ef93873704916ef5156a9a97` and its preparation
+SHA-256 `c25f55abd1e3b07a7d1a5bbb5f6b69b8145db8bd9a5c669720f9787ef9826ebd`; they are copied, not
+reserialized or reconstructed. The absence of an `original` request file is deliberate: these are
+the exact post-resampling importer calls, not a synthetic paired input.
+
+The combined capture is now exactly 283 calls: 165 `trace_attributes` calls followed by 118
+whole-trip `trace_route` calls. Both native collectors choose the actual `trace_attributes` wrapper
+operation for this group while retaining the one-request schema; missing, repeated, reordered,
+byte-changed, action-changed, or source-index-changed inputs are refused by the host before native
+execution. This extends source preparation only. It neither admits importer outcomes nor establishes
+consumer, user-device, or production behavior.
 
 ## Exact source graph
 
@@ -113,7 +136,7 @@ require separate reviewed evidence.
 
 ## Bounds and failure publication
 
-Each raw response is limited to 1 MiB, every run to the exact 261 planned calls,
+Each raw response is limited to 1 MiB, every run to the exact 283 planned calls,
 and raw artifact publication to 128 MiB.
 The collectors publish a completion receipt only after every return is saved.
 The host verifies exact file inventory and bytes, not just successful XCTest/Gradle status.

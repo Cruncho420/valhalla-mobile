@@ -66,6 +66,7 @@ class CaptureTests(unittest.TestCase):
                 rows.append(capture.staged_row(request_root, row, index, stage))
             plan = dict(requestManifestSha256=capture.REQUEST_SHA, rows=rows, groups=capture.GROUPS,
                         tripRequestManifestSha256=capture.TRIP_SHA,
+                        importerRequestManifestSha256=capture.IMPORTER_SHA,
                         stageContractSha256=capture.STAGE_CONTRACT, sourceArtifactId=10341602724,
                         sourceRunId=34828738835, sourceAttestationId=47303160,
                         sourceZipSha256=capture.ZIP_SHA, graphSha256=capture.GRAPH_SHA,
@@ -132,6 +133,18 @@ class CaptureTests(unittest.TestCase):
                     save(altered_receipt)
                     with self.assertRaises(capture.InvalidCapture):
                         capture.verify(stage, output, 'android')
+                altered_plan = copy.deepcopy(plan)
+                importer = next(row for row in altered_plan['rows'] if row['group'] == 'importer-v1')
+                importer['sourceInputIndices'][1] = importer['sourceInputIndices'][0]
+                altered_stage = capture.encoded(altered_plan)
+                (stage / 'stage.json').write_bytes(altered_stage)
+                (output / 'stage.json').write_bytes(altered_stage)
+                altered_receipt = copy.deepcopy(receipt)
+                altered_receipt['stageSha256'] = capture.sha(altered_stage)
+                altered_receipt['rows'][importer['index']]['identity'] = importer
+                save(altered_receipt)
+                with self.assertRaises(capture.InvalidCapture):
+                    capture.verify(stage, output, 'android')
                 (stage / 'stage.json').write_bytes(raw_stage)
                 (output / 'stage.json').write_bytes(raw_stage)
                 # The previously admitted110 alone can no longer satisfy the combined contract.

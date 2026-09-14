@@ -16,9 +16,9 @@ class TripStageTests(unittest.TestCase):
         rows=capture.admit_trip_requests(ROOT/'test-fixtures/prospective-trip-v1')
         self.assertEqual(len(rows),118)
         entries=capture.combined_entries(ROOT/'test-fixtures/prospective-v1')
-        self.assertEqual(len(entries),261)
-        self.assertEqual(capture.CAPTURE_FILES,525)
-        self.assertEqual(sum(row.get('action','trace_attributes')=='trace_attributes' for _,row in entries),143)
+        self.assertEqual(len(entries),283)
+        self.assertEqual(capture.CAPTURE_FILES,569)
+        self.assertEqual(sum(row.get('action','trace_attributes')=='trace_attributes' for _,row in entries),165)
         self.assertEqual(sum(row.get('action')=='trace_route' for _,row in entries),118)
         for (_,entry),row in zip(entries[143:],rows):
             for key in ('fixtureId','variant','split','action','windowIndex','window','sourceInputIndices'):
@@ -37,6 +37,9 @@ class TripStageTests(unittest.TestCase):
             self.assertIn('trace_attributes',source)
             self.assertIn('traceRoute',source)
             self.assertIn('traceAttributes',source)
+            self.assertIn('283',source)
+        self.assertIn('row["request"] != nil', swift)
+        self.assertIn('row.has("request")', kotlin)
 
     def test_missing_duplicate_reordered_or_wrong_action_cannot_replace_frozen_manifest(self):
         for mutation in ('missing','duplicate','reordered','wrong-action'):

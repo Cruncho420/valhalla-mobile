@@ -24,14 +24,32 @@ COMPOSITE_CONTRACT = 'b487eebba7e3743b5909bdfd8edc538b78592ff3b351aff9fe416f2a3d
 COMPOSITE_STAGE_CONTRACT = '110a7465be2e484d15b6d90f941d24a49b00beda9246c7c288407810a35ae279'
 TRIP_SHA = '48aab217f31334efa69b524f0d405ee3b105d70e984c62eefbbc0c2b1d590074'
 TRIP_CONTRACT = 'e2dfeb8214116e54b9413f69a43fa3b60bc3f0820d1e58a71cc027c2bf5e8eff'
+IMPORTER_SHA = '4c77cc83d895188a80c74c1554908f497916bee49c352d79b520c62627191877'
+IMPORTER_CONTRACT = 'a56e32a5fa31dcbfa8e45fb88075742afda942c3b0c3c14c0593347941b4af10'
+IMPORTER_AUTHORITY = {
+    'importerInventorySha256': '9ce80de6477a62eb80a2a95a33c5a01a3b1a7ee2ef93873704916ef5156a9a97',
+    'preparationSha256': 'c25f55abd1e3b07a7d1a5bbb5f6b69b8145db8bd9a5c669720f9787ef9826ebd',
+    'productSourceSha256': {
+        'services/valhalla/valhallaTraceMatcher.ts': 'a37da43ece8698cf6c569fd32ba76a178efe4e4a6f4d8c35f9b47269095eabcb',
+        'services/import/traceGeometry.ts': '69e515bbd528e11d7ba8ffefbe8ce81aa74b9ec9306ad2f171b535f9f781d6b8',
+        'utils/geo.ts': '3ae0c42023bb3014aa61897b8157214dfc1e424963c82751b4ee99e6ad850920',
+        'services/valhalla/valhallaConfig.template.json': '9ce5e0c81b4225849ce80fd241b6ba278f69bf172181ee2a7c7a33b3bd72bceb',
+    },
+    'attributesManifestSha256': [
+        {'id': 'prospective-v1', 'manifestSha256': REQUEST_SHA},
+        {'id': 'prospective-composite-v1', 'manifestSha256': COMPOSITE_SHA},
+    ],
+}
 GROUPS = [dict(id='single-window-v1', manifestSha256=REQUEST_SHA,
                stageContractSha256=STAGE_CONTRACT, requestCount=110),
           dict(id='composite-v1', manifestSha256=COMPOSITE_SHA,
                requestContractSha256=COMPOSITE_CONTRACT,
                stageContractSha256=COMPOSITE_STAGE_CONTRACT, requestCount=33),
           dict(id='trip-v1', manifestSha256=TRIP_SHA,
-               requestContractSha256=TRIP_CONTRACT, action='trace_route', requestCount=118)]
-REQUEST_COUNT = 261
+               requestContractSha256=TRIP_CONTRACT, action='trace_route', requestCount=118),
+          dict(id='importer-v1', manifestSha256=IMPORTER_SHA,
+               requestContractSha256=IMPORTER_CONTRACT, action='trace_attributes', requestCount=22)]
+REQUEST_COUNT = 283
 CAPTURE_FILES = 2 * REQUEST_COUNT + 3
 MAX_RESPONSE = 1024 * 1024
 MAX_TOTAL = 128 * 1024 * 1024
@@ -134,22 +152,67 @@ def admit_trip_requests(root):
     return rows
 
 
+def admit_importer_requests(root):
+    raw = read(root / 'manifest.json', 128 * 1024)
+    require(sha(raw) == IMPORTER_SHA)
+    manifest = decode(raw)
+    contract = manifest['contract']
+    require(manifest['contractSha256'] == IMPORTER_CONTRACT
+            and sha(production_encoded(contract)) == IMPORTER_CONTRACT)
+    require(contract['action'] == 'trace_attributes' and contract['authority'] == IMPORTER_AUTHORITY)
+    rows = contract['requests']
+    require(len(rows) == 22)
+    names = {'manifest.json'}
+    identities = set()
+    for row in rows:
+        require(row['action'] == 'trace_attributes')
+        require(isinstance(row['sourcePointCount'], int) and row['sourcePointCount'] > 0)
+        require(isinstance(row['selectedPointCount'], int) and row['selectedPointCount'] > 0)
+        require(isinstance(row['windowIndex'], int) and row['windowIndex'] >= 0)
+        window = row['window']
+        require(set(window) == {'startIndex', 'endIndex'} and isinstance(window['startIndex'], int)
+                and isinstance(window['endIndex'], int) and 0 <= window['startIndex'] <= window['endIndex'])
+        indices = row['sourceInputIndices']
+        require(isinstance(indices, list) and len(indices) == window['endIndex'] - window['startIndex'] + 1
+                and all(isinstance(value, int) and value >= 0 for value in indices)
+                and all(before < after for before, after in zip(indices, indices[1:]))
+                and len(indices) <= row['selectedPointCount'] and window['endIndex'] < row['selectedPointCount']
+                and indices[-1] < row['sourcePointCount'])
+        identity = (row['fixtureId'], row['variant'], row['windowIndex'])
+        require(identity not in identities)
+        identities.add(identity)
+        item = row['request']
+        require(re.fullmatch(r'[a-z0-9-]+--resampled--w[0-9]{3}\.trace_attributes\.json', item['file']))
+        require(item['file'] not in names)
+        names.add(item['file'])
+        data = read(root / item['file'], 8192)
+        require(len(data) == item['bytes'] and sha(data) == item['sha256'])
+        request = decode(data)
+        require(set(request) == {'shape', 'costing', 'shape_match', 'alternates', 'filters'}
+                and isinstance(request['shape'], list) and len(request['shape']) == len(indices)
+                and request['costing'] == 'auto' and request['shape_match'] == 'map_snap')
+    require({path.name for path in root.iterdir()} == names)
+    return rows
+
+
 def payload_kinds(row):
     action = row.get('action', 'trace_attributes')
     require(action in {'trace_attributes', 'trace_route'})
-    return ('original', 'diagnostic') if action == 'trace_attributes' else ('request',)
+    return ('request',) if action == 'trace_route' or 'request' in row else ('original', 'diagnostic')
 
 
 def execution_item(row):
-    return row['diagnostic'] if row.get('action', 'trace_attributes') == 'trace_attributes' else row['request']
+    return row['request'] if row.get('action') == 'trace_route' or 'request' in row else row['diagnostic']
 
 
 def combined_entries(single_root):
     composite_root = ROOT / 'test-fixtures/prospective-composite-v1'
     trip_root = ROOT / 'test-fixtures/prospective-trip-v1'
+    importer_root = ROOT / 'test-fixtures/prospective-importer-v1'
     groups = [('single-window-v1', single_root, admit_requests(single_root)),
               ('composite-v1', composite_root, admit_composite_requests(composite_root)),
-              ('trip-v1', trip_root, admit_trip_requests(trip_root))]
+              ('trip-v1', trip_root, admit_trip_requests(trip_root)),
+              ('importer-v1', importer_root, admit_importer_requests(importer_root))]
     entries = []
     for group_id, root, rows in groups:
         for row in rows:
@@ -201,11 +264,13 @@ def stage(requests, archive, destination):
         (private / 'request-manifest.json').write_bytes(read(requests / 'manifest.json', 128 * 1024))
         (private / 'composite-request-manifest.json').write_bytes(read(ROOT / 'test-fixtures/prospective-composite-v1/manifest.json', 128 * 1024))
         (private / 'trip-request-manifest.json').write_bytes(read(ROOT / 'test-fixtures/prospective-trip-v1/manifest.json', 128 * 1024))
+        (private / 'importer-request-manifest.json').write_bytes(read(ROOT / 'test-fixtures/prospective-importer-v1/manifest.json', 128 * 1024))
         entries = []
         for index, (request_root, row) in enumerate(rows):
             entries.append(staged_row(request_root, row, index, private))
         manifest = dict(version=1, groups=GROUPS, stageContractSha256=STAGE_CONTRACT,
                         requestManifestSha256=REQUEST_SHA, tripRequestManifestSha256=TRIP_SHA,
+                        importerRequestManifestSha256=IMPORTER_SHA,
                         sourceArtifactId=10341602724,
                         sourceRunId=34828738835, sourceAttestationId=47303160,
                         sourceZipSha256=ZIP_SHA, graphSha256=GRAPH_SHA,
@@ -222,6 +287,7 @@ def verify(stage_dir, output, platform):
     planned = decode(stage_bytes)
     require(planned['requestManifestSha256'] == REQUEST_SHA)
     require(planned['tripRequestManifestSha256'] == TRIP_SHA)
+    require(planned['importerRequestManifestSha256'] == IMPORTER_SHA)
     require(planned['groups'] == GROUPS)
     require(planned['stageContractSha256'] == STAGE_CONTRACT)
     require(planned['sourceArtifactId'] == 10341602724 and planned['sourceRunId'] == 34828738835)
