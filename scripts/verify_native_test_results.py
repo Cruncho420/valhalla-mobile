@@ -15,7 +15,8 @@ from xml.parsers import expat
 
 EXPECTED = {
     'com.valhalla.valhalla.ValhallaRawTraceRouteTest': frozenset({
-        'traceUsesMapMatchingAndActorSurvivesErrors', 'closeIsIdempotentAndRejectsBothActions'}),
+        'traceUsesMapMatchingAndActorSurvivesErrors', 'closeIsIdempotentAndRejectsBothActions',
+        'indexContractBoundaries'}),
     'com.valhalla.valhalla.ValhallaTraceEvidenceTest': frozenset({
         'originalSamplesErrorsAndSameActorRecovery', 'boundedPrefixesAlternativesAndDiscontinuities',
         'numericTokensAreNeverRoundedOrConfusedWithStrings'}),
