@@ -197,3 +197,17 @@ The receipt remains compact for the real 9,805-header installation.
 Older receipts remain readable for consumers that do not request header verification.
 This binds the installed output available after the build; it does not claim those generated
 headers existed before configuration or independently attest external build dependency origins.
+
+### Hidden Apple headers in CI transport
+
+The Apple build upload explicitly includes hidden files within its three scoped inputs:
+the archive, its receipt, and the installed header directory.
+The build-time header identity includes every regular file, including empty hidden files.
+Artifact upload defaults must not silently filter that identity during transport.
+A retained failed CI artifact was missing only `boost/headers/.gitkeep`:
+adding its known empty-file digest to an in-memory diagnostic map exactly reproduced the build receipt.
+That comparison diagnosed transport loss; it did not repair or authorize the old artifact.
+A new build/upload must deliver the intact tree, and all existing header checks remain strict.
+The regression checks the narrow workflow opt-in and lossless hidden-header archive round trip,
+and verifies that deleting or changing the hidden file still fails the existing authority check.
+The round-trip test uses a small standard-library archive fixture; it does not execute GitHub Actions.
