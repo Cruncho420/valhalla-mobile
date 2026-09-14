@@ -63,13 +63,9 @@ class CaptureTests(unittest.TestCase):
             (stage / 'config-template.json').write_bytes(template)
             rows = []
             for index, (request_root, row) in enumerate(capture.combined_entries(ROOT / 'test-fixtures/prospective-v1')):
-                item = dict(row)
-                for kind in ('original', 'diagnostic'):
-                    filename = f'{index:03d}.{kind}.json'
-                    item[kind] = dict(row[kind], file=filename)
-                    (stage / filename).write_bytes((request_root / row[kind]['file']).read_bytes())
-                rows.append(item)
+                rows.append(capture.staged_row(request_root, row, index, stage))
             plan = dict(requestManifestSha256=capture.REQUEST_SHA, rows=rows, groups=capture.GROUPS,
+                        tripRequestManifestSha256=capture.TRIP_SHA,
                         stageContractSha256=capture.STAGE_CONTRACT, sourceArtifactId=10341602724,
                         sourceRunId=34828738835, sourceAttestationId=47303160,
                         sourceZipSha256=capture.ZIP_SHA, graphSha256=capture.GRAPH_SHA,
@@ -83,7 +79,7 @@ class CaptureTests(unittest.TestCase):
             (output / 'config.json').write_bytes(config)
             captured = []
             for index, row in enumerate(rows):
-                request = (stage / row['diagnostic']['file']).read_bytes()
+                request = (stage / capture.execution_item(row)['file']).read_bytes()
                 response = b'{"code":171}' if index == 0 else b'{"alternates":[{"raw_score":1}]}'
                 (output / f'{index:03d}.request.json').write_bytes(request)
                 (output / f'{index:03d}.response.raw').write_bytes(response)

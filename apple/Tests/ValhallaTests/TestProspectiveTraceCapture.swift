@@ -46,20 +46,23 @@ final class TestProspectiveTraceCapture: XCTestCase {
         let stage = try read(root.appendingPathComponent("stage.json"), limit: 262144)
         guard digest(stage) == expectedStage,
               let plan = try JSONSerialization.jsonObject(with: stage) as? [String: Any],
-              let rows = plan["rows"] as? [[String: Any]], rows.count == 143 else { throw refuse() }
+              let rows = plan["rows"] as? [[String: Any]], rows.count == 261 else { throw refuse() }
         let graph = try read(root.appendingPathComponent("graph.tar"), limit: 4194304)
         guard digest(graph) == "c0957c92bb71833ed3763e4b2c42a536cb28f2bcb69c991264532485edee75d4" else {
             throw refuse()
         }
         // Admit every input before entering the actor; never partially execute an edited stage.
-        var requests = [Data]()
+        var requests = [(action: String, data: Data)]()
         for (index, row) in rows.enumerated() {
-            guard let item = row["diagnostic"] as? [String: Any],
-                  item["file"] as? String == String(format: "%03d.diagnostic.json", index),
+            guard let action = row["action"] as? String,
+                  action == "trace_attributes" || action == "trace_route" else { throw refuse() }
+            let kind = action == "trace_attributes" ? "diagnostic" : "request"
+            guard let item = row[kind] as? [String: Any],
+                  item["file"] as? String == String(format: "%03d.%@.json", index, kind),
                   let expected = item["sha256"] as? String else { throw refuse() }
-            let data = try read(root.appendingPathComponent(String(format: "%03d.diagnostic.json", index)), limit: 8192)
+            let data = try read(root.appendingPathComponent(String(format: "%03d.%@.json", index, kind)), limit: 8192)
             guard digest(data) == expected, String(data: data, encoding: .utf8) != nil else { throw refuse() }
-            requests.append(data)
+            requests.append((action, data))
         }
         let template = try read(root.appendingPathComponent("config-template.json"), limit: 65536)
         guard digest(template) == plan["configTemplateSha256"] as? String,
@@ -78,13 +81,19 @@ final class TestProspectiveTraceCapture: XCTestCase {
         var captured = [[String: Any]]()
         var total = 0
         for (index, request) in requests.enumerated() {
-            try save(request, String(format: "%03d.request.json", index))
-            let response = Data(actor.traceAttributes(rawRequest: String(data: request, encoding: .utf8)!).utf8)
+            try save(request.data, String(format: "%03d.request.json", index))
+            let raw = String(data: request.data, encoding: .utf8)!
+            let response: Data
+            if request.action == "trace_attributes" {
+                response = Data(actor.traceAttributes(rawRequest: raw).utf8)
+            } else {
+                response = Data(actor.traceRoute(rawRequest: raw).utf8)
+            }
             total += response.count
             guard response.count <= 1048576, total <= 120 * 1048576 else { throw refuse() }
             try save(response, String(format: "%03d.response.raw", index))
-            captured.append(["identity": rows[index], "requestSha256": digest(request),
-                             "requestBytes": request.count, "responseSha256": digest(response),
+            captured.append(["identity": rows[index], "requestSha256": digest(request.data),
+                             "requestBytes": request.data.count, "responseSha256": digest(response),
                              "responseBytes": response.count, "returned": true])
         }
         // The executed XCTest bundle is the actual statically linked consumer executable.

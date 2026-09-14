@@ -52,17 +52,21 @@ class ValhallaProspectiveTraceCaptureTest {
     requireCapture(digest(stage) == expectedStage)
     val plan = JSONObject(stage.toString(Charsets.UTF_8))
     val rows = plan.getJSONArray("rows")
-    requireCapture(rows.length() == 143)
+    requireCapture(rows.length() == 261)
     val graph = read(File(root, "graph.tar"), 4194304)
     requireCapture(digest(graph) == "c0957c92bb71833ed3763e4b2c42a536cb28f2bcb69c991264532485edee75d4")
     val requests = (0 until rows.length()).map { index ->
-      val item = rows.getJSONObject(index).getJSONObject("diagnostic")
-      val name = "%03d.diagnostic.json".format(index)
+      val row = rows.getJSONObject(index)
+      val action = row.getString("action")
+      requireCapture(action == "trace_attributes" || action == "trace_route")
+      val kind = if (action == "trace_attributes") "diagnostic" else "request"
+      val item = row.getJSONObject(kind)
+      val name = "%03d.%s.json".format(index, kind)
       requireCapture(item.getString("file") == name)
       read(File(root, name), 8192).also {
         requireCapture(digest(it) == item.getString("sha256"))
         requireCapture(it.toString(Charsets.UTF_8).toByteArray(Charsets.UTF_8).contentEquals(it))
-      }
+      }.let { action to it }
     }
     val template = read(File(root, "config-template.json"), 65536)
     requireCapture(digest(template) == plan.getString("configTemplateSha256"))
@@ -101,9 +105,10 @@ class ValhallaProspectiveTraceCaptureTest {
     val captured = JSONArray()
     var total = 0L
     ValhallaRaw(File(directory, "config.json").absolutePath).use { actor ->
-      requests.forEachIndexed { index, request ->
+      requests.forEachIndexed { index, (action, request) ->
         save(request, "%03d.request.json".format(index))
-        val response = actor.traceAttributes(request.toString(Charsets.UTF_8)).toByteArray(Charsets.UTF_8)
+        val response = (if (action == "trace_attributes") actor.traceAttributes(request.toString(Charsets.UTF_8))
+                        else actor.traceRoute(request.toString(Charsets.UTF_8))).toByteArray(Charsets.UTF_8)
         total += response.size
         requireCapture(response.size <= 1048576 && total <= 120L * 1048576)
         save(response, "%03d.response.raw".format(index))

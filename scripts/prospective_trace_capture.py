@@ -22,12 +22,16 @@ EXTRACT_SHA = 'c0957c92bb71833ed3763e4b2c42a536cb28f2bcb69c991264532485edee75d4'
 COMPOSITE_SHA = 'cba47d133c2d6ff62d95139baca0ed5c5d5295971f9ac486325a10b6aeb6347b'
 COMPOSITE_CONTRACT = 'b487eebba7e3743b5909bdfd8edc538b78592ff3b351aff9fe416f2a3d83e477'
 COMPOSITE_STAGE_CONTRACT = '110a7465be2e484d15b6d90f941d24a49b00beda9246c7c288407810a35ae279'
+TRIP_SHA = '48aab217f31334efa69b524f0d405ee3b105d70e984c62eefbbc0c2b1d590074'
+TRIP_CONTRACT = 'e2dfeb8214116e54b9413f69a43fa3b60bc3f0820d1e58a71cc027c2bf5e8eff'
 GROUPS = [dict(id='single-window-v1', manifestSha256=REQUEST_SHA,
                stageContractSha256=STAGE_CONTRACT, requestCount=110),
           dict(id='composite-v1', manifestSha256=COMPOSITE_SHA,
                requestContractSha256=COMPOSITE_CONTRACT,
-               stageContractSha256=COMPOSITE_STAGE_CONTRACT, requestCount=33)]
-REQUEST_COUNT = 143
+               stageContractSha256=COMPOSITE_STAGE_CONTRACT, requestCount=33),
+          dict(id='trip-v1', manifestSha256=TRIP_SHA,
+               requestContractSha256=TRIP_CONTRACT, action='trace_route', requestCount=118)]
+REQUEST_COUNT = 261
 CAPTURE_FILES = 2 * REQUEST_COUNT + 3
 MAX_RESPONSE = 1024 * 1024
 MAX_TOTAL = 128 * 1024 * 1024
@@ -48,6 +52,11 @@ def sha(data):
 
 def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+
+
+def production_encoded(value):
+    """Match the frozen product serializer's JSON.stringify key order exactly."""
+    return json.dumps(value, separators=(',', ':'), allow_nan=False).encode()
 
 
 def decode(data):
@@ -100,20 +109,71 @@ def admit_composite_requests(root):
     return _admit_requests(root, COMPOSITE_SHA, 33)
 
 
+def admit_trip_requests(root):
+    raw = read(root / 'manifest.json', 128 * 1024)
+    require(sha(raw) == TRIP_SHA)
+    manifest = decode(raw)
+    contract = manifest['contract']
+    require(manifest['contractSha256'] == TRIP_CONTRACT and sha(production_encoded(contract)) == TRIP_CONTRACT)
+    require(contract['action'] == 'trace_route')
+    rows = contract['requests']
+    require(len(rows) == 118)
+    names = {'manifest.json'}
+    for row in rows:
+        require(row['action'] == 'trace_route')
+        item = row['request']
+        require(re.fullmatch(r'[a-z0-9-]+\.trace_route\.json', item['file']))
+        require(item['file'] not in names)
+        names.add(item['file'])
+        data = read(root / item['file'], 8192)
+        require(len(data) == item['bytes'] and sha(data) == item['sha256'])
+        request = decode(data)
+        require(set(request) == {'shape', 'costing', 'shape_match'})
+        require(row['sourceInputIndices'] == list(range(len(request['shape']))))
+    require({p.name for p in root.iterdir()} == names)
+    return rows
+
+
+def payload_kinds(row):
+    action = row.get('action', 'trace_attributes')
+    require(action in {'trace_attributes', 'trace_route'})
+    return ('original', 'diagnostic') if action == 'trace_attributes' else ('request',)
+
+
+def execution_item(row):
+    return row['diagnostic'] if row.get('action', 'trace_attributes') == 'trace_attributes' else row['request']
+
+
 def combined_entries(single_root):
     composite_root = ROOT / 'test-fixtures/prospective-composite-v1'
+    trip_root = ROOT / 'test-fixtures/prospective-trip-v1'
     groups = [('single-window-v1', single_root, admit_requests(single_root)),
-              ('composite-v1', composite_root, admit_composite_requests(composite_root))]
+              ('composite-v1', composite_root, admit_composite_requests(composite_root)),
+              ('trip-v1', trip_root, admit_trip_requests(trip_root))]
     entries = []
     for group_id, root, rows in groups:
         for row in rows:
             # Explicit composite window/source indices are never flattened or renumbered.
             entry = dict(row, index=len(entries), group=group_id)
+            entry.setdefault('action', 'trace_attributes')
+            if group_id == 'trip-v1':
+                entry['sourceGroup'] = row['group']
             if group_id == 'single-window-v1':
                 entry['windowIndex'] = 0
             entries.append((root, entry))
     require(len(entries) == REQUEST_COUNT)
     return entries
+
+
+def staged_row(request_root, row, index, destination=None):
+    entry = dict(row)
+    for kind in payload_kinds(row):
+        data = read(request_root / row[kind]['file'], 8192)
+        filename = f'{index:03d}.{kind}.json'
+        if destination is not None:
+            (destination / filename).write_bytes(data)
+        entry[kind] = dict(row[kind], file=filename)
+    return entry
 
 
 def stage(requests, archive, destination):
@@ -140,17 +200,13 @@ def stage(requests, archive, destination):
         (private / 'config-template.json').write_bytes(template)
         (private / 'request-manifest.json').write_bytes(read(requests / 'manifest.json', 128 * 1024))
         (private / 'composite-request-manifest.json').write_bytes(read(ROOT / 'test-fixtures/prospective-composite-v1/manifest.json', 128 * 1024))
+        (private / 'trip-request-manifest.json').write_bytes(read(ROOT / 'test-fixtures/prospective-trip-v1/manifest.json', 128 * 1024))
         entries = []
         for index, (request_root, row) in enumerate(rows):
-            entry = dict(row)
-            for kind in ('original', 'diagnostic'):
-                data = read(request_root / row[kind]['file'], 8192)
-                filename = f'{index:03d}.{kind}.json'
-                (private / filename).write_bytes(data)
-                entry[kind] = dict(row[kind], file=filename)
-            entries.append(entry)
+            entries.append(staged_row(request_root, row, index, private))
         manifest = dict(version=1, groups=GROUPS, stageContractSha256=STAGE_CONTRACT,
-                        requestManifestSha256=REQUEST_SHA, sourceArtifactId=10341602724,
+                        requestManifestSha256=REQUEST_SHA, tripRequestManifestSha256=TRIP_SHA,
+                        sourceArtifactId=10341602724,
                         sourceRunId=34828738835, sourceAttestationId=47303160,
                         sourceZipSha256=ZIP_SHA, graphSha256=GRAPH_SHA,
                         extractSha256=EXTRACT_SHA, configTemplateSha256=sha(template), rows=entries)
@@ -165,6 +221,7 @@ def verify(stage_dir, output, platform):
     stage_bytes = read(stage_dir / 'stage.json', 256 * 1024)
     planned = decode(stage_bytes)
     require(planned['requestManifestSha256'] == REQUEST_SHA)
+    require(planned['tripRequestManifestSha256'] == TRIP_SHA)
     require(planned['groups'] == GROUPS)
     require(planned['stageContractSha256'] == STAGE_CONTRACT)
     require(planned['sourceArtifactId'] == 10341602724 and planned['sourceRunId'] == 34828738835)
@@ -174,10 +231,9 @@ def verify(stage_dir, output, platform):
     # Independently re-admit frozen source; an edited stage cannot choose its own plan.
     original_rows = combined_entries(ROOT / 'test-fixtures/prospective-v1')
     expected_rows = []
-    for index, (_, row) in enumerate(original_rows):
-        expected = dict(row)
-        for kind in ('original', 'diagnostic'):
-            expected[kind] = dict(row[kind], file=f'{index:03d}.{kind}.json')
+    for index, (source_root, row) in enumerate(original_rows):
+        expected = staged_row(source_root, row, index)
+        for kind in payload_kinds(row):
             data = read(stage_dir / expected[kind]['file'], 8192)
             require(sha(data) == expected[kind]['sha256'])
         expected_rows.append(expected)
@@ -209,7 +265,7 @@ def verify(stage_dir, output, platform):
         names.update((request_name, response_name))
         request = read(output / request_name, 8192)
         response = read(output / response_name, MAX_RESPONSE)
-        require(request == read(stage_dir / expected['diagnostic']['file'], 8192))
+        require(request == read(stage_dir / execution_item(expected)['file'], 8192))
         require(actual['requestSha256'] == sha(request) and actual['requestBytes'] == len(request))
         require(actual['responseSha256'] == sha(response) and actual['responseBytes'] == len(response))
         require(actual['returned'] is True)

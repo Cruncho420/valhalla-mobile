@@ -39,14 +39,31 @@ is copied without flattening, renumbering, or calculating labels from native res
 The 193-point original tail retains indices 184 through 192, including eight shared samples
 and one new sample; its resampled companion remains a separate frozen sequence.
 
-The stage records two ordered manifest groups and 143 calls: the original 110, then these 33.
+Before the whole-trip additive group, the stage records two ordered attribute manifest groups and 143 calls:
+the original 110, then these 33.
 A row has a separate global capture `index`; that index never replaces source or window indices.
-Both collectors now require all 143 calls, and the host re-derives exact identities from both
-pinned manifests before admitting a capture.
+Both collectors now require the full combined inventory, and the host re-derives exact identities from
+all pinned manifests before admitting a capture.
 An old 110-only receipt, missing/duplicated window, self-consistently renumbered tail, or unreviewed
 third group is refused.
 This expands capture preparation only; consumer preservation and multiwindow product admission
 remain separate and unproven.
+
+## Frozen whole-trip route authority
+
+`test-fixtures/prospective-trip-v1/manifest.json` is a third, additive input group containing
+118 separately frozen `trace_route` requests. Its exact manifest SHA-256 is
+`48aab217f31334efa69b524f0d405ee3b105d70e984c62eefbbc0c2b1d590074` and its production
+`JSON.stringify` request-contract SHA-256 is
+`e2dfeb8214116e54b9413f69a43fa3b60bc3f0820d1e58a71cc027c2bf5e8eff`.
+Each request is admitted only with its original action, shape, costing, and shape-match bytes;
+the host refuses changed bytes, a changed action, a missing/duplicate/reordered row, or an extra file.
+The staged row preserves the source group separately from its global capture index, and the collectors
+dispatch `trace_route` only for this group rather than translating it into `trace_attributes`.
+
+The combined capture is exactly 261 calls: the original 143 `trace_attributes` calls followed by
+these 118 whole-trip `trace_route` calls. It is source preparation and raw-native-return evidence only:
+it neither accepts map-matching outcomes nor establishes consumer, user-device, or production behavior.
 
 ## Exact source graph
 
@@ -96,7 +113,7 @@ require separate reviewed evidence.
 
 ## Bounds and failure publication
 
-Each raw response is limited to 1 MiB, every run to the exact 143 planned calls,
+Each raw response is limited to 1 MiB, every run to the exact 261 planned calls,
 and raw artifact publication to 128 MiB.
 The collectors publish a completion receipt only after every return is saved.
 The host verifies exact file inventory and bytes, not just successful XCTest/Gradle status.

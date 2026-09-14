@@ -13,8 +13,8 @@ import prospective_trace_capture as capture
 class CompositeStageTests(unittest.TestCase):
     def test_exact_combined_inventory_retains_each_source_window(self):
         entries = capture.combined_entries(ROOT/'test-fixtures/prospective-v1')
-        self.assertEqual(len(entries),143)
-        self.assertEqual([row['index'] for _, row in entries],list(range(143)))
+        self.assertEqual(len(entries),261)
+        self.assertEqual([row['index'] for _, row in entries],list(range(261)))
         rows = capture.admit_composite_requests(ROOT/'test-fixtures/prospective-composite-v1')
         self.assertEqual(len(rows),33)
         for (_, staged), source in zip(entries[110:],rows):
