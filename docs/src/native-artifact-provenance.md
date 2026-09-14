@@ -220,3 +220,11 @@ A successful Gradle run does not bypass this exact result inventory.
 An independent six-method XML fixture guards against omitting a required method from the verifier;
 missing, skipped, renamed, duplicated, failed, or unexpected selected methods remain rejected.
 This fixes result admission only and does not change any native test assertions.
+
+## Prospective capture isolation
+
+The optional prospective cohort uses separate collectors and the exact reviewed census source graph.
+Its pre-build mode gate and release-job guard keep that run artifact-only.
+Existing native trace tests and bundled graph assets remain unchanged.
+See [prospective native capture preparation](prospective-native-capture.md) for frozen input authority,
+actual execution/provenance boundaries, raw-return completeness, and bounded failure publication.

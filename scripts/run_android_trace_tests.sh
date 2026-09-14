@@ -67,3 +67,9 @@ if [ "$capture_status" != 0 ]; then
     echo "Native trace response capture failed" >&2
     exit "$capture_status"
 fi
+
+# Prospective inputs are never included in the established six-method run or its graph assets.
+if [ "${VALHALLA_PROSPECTIVE_INPUT:-}" != "" ]; then
+    export VALHALLA_PROSPECTIVE_TARGET="$target"
+    bash scripts/run_android_prospective_capture.sh
+fi

@@ -23,6 +23,11 @@ on:
         description: "Publish a GitHub release after building (false keeps workflow artifacts only)"
         required: true
         default: true
+      prospective_capture:
+        type: boolean
+        description: "Capture the reviewed prospective requests (requires publish_release=false)"
+        required: true
+        default: false
       tag_name:
         type: string
         description: "Tag to create the release under"
@@ -30,7 +35,22 @@ on:
         default: "rods-0.5.1-k21"
 
 jobs:
+  admit-mode:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Refuse prospective capture with release publication before any build
+        env:
+          PROSPECTIVE_CAPTURE: ${{ inputs.prospective_capture }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        run: |
+          if [ "$PROSPECTIVE_CAPTURE" = true ] && [ "$PUBLISH_RELEASE" = true ]; then
+            echo "Prospective capture is artifact-only" >&2
+            exit 1
+          fi
+
   build-ios:
+    needs: admit-mode
     runs-on: macos-15
     permissions:
       contents: read
@@ -108,6 +128,7 @@ jobs:
             valhalla-wrapper.xcframework.zip
 
   build-android:
+    needs: admit-mode
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -328,6 +349,25 @@ jobs:
               env.write("TRACE_SIMULATOR_ID=" + phones[0]["udid"] + "\n")
           PY
           shasum -a 256 apple/Tests/ValhallaTests/TestTraceRoute.swift > build/test-evidence/ios/test-source.sha256
+      - name: Stage the exact reviewed prospective source and requests
+        if: ${{ inputs.prospective_capture }}
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/fetch_prospective_source.py --output build/prospective-source
+          python3 scripts/prospective_trace_capture.py stage \
+            --archive build/prospective-source/artifact.zip --output build/prospective-input \
+            > build/prospective-stage-receipt.json
+          python3 - <<'PYTHON'
+          import hashlib, os, pathlib
+          root = pathlib.Path("build/prospective-input").resolve()
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write("VALHALLA_PROSPECTIVE_INPUT=" + str(root) + "\n")
+              env.write("VALHALLA_PROSPECTIVE_STAGE_SHA256=" + hashlib.sha256((root / "stage.json").read_bytes()).hexdigest() + "\n")
+          PYTHON
       - name: Run native trace XCTest
         shell: bash
         run: |
@@ -370,12 +410,77 @@ jobs:
               assert matches[0].get("result") == "Passed", matches
           PY
           exit "$test_status"
+      - name: Capture prospective native XCTest returns separately
+        if: ${{ inputs.prospective_capture }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$PWD/build/prospective-private/ios"
+          mkdir -p "$evidence"
+          export TEST_RUNNER_VALHALLA_PROSPECTIVE_INPUT="$VALHALLA_PROSPECTIVE_INPUT"
+          export TEST_RUNNER_VALHALLA_PROSPECTIVE_STAGE_SHA256="$VALHALLA_PROSPECTIVE_STAGE_SHA256"
+          export TEST_RUNNER_VALHALLA_PROSPECTIVE_OUTPUT="$evidence/raw"
+          xcodebuild test -scheme ValhallaMobile -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$TRACE_SIMULATOR_ID" \
+            -only-testing:ValhallaTests/TestProspectiveTraceCapture \
+            -parallel-testing-enabled NO -derivedDataPath build/prospective-derived \
+            -resultBundlePath "$evidence/Tests.xcresult" -skipPackagePluginValidation \
+            > "$evidence/xcodebuild.log" 2>&1
+          xcrun xcresulttool get test-results tests --path "$evidence/Tests.xcresult" > "$evidence/tests.json"
+          python3 - "$evidence/tests.json" <<'PYTHON'
+          import json, pathlib, sys
+          def flatten(nodes):
+              for node in nodes:
+                  yield node
+                  yield from flatten(node.get("children", []))
+          tests = [n for n in flatten(json.loads(pathlib.Path(sys.argv[1]).read_text())["testNodes"])
+                   if n.get("name") == "testFrozenProspectiveCapture()"]
+          assert len(tests) == 1 and tests[0].get("result") == "Passed", "Prospective XCTest missing, failed, or duplicated"
+          PYTHON
+          python3 scripts/prospective_trace_capture.py verify --stage "$VALHALLA_PROSPECTIVE_INPUT" \
+            --capture "$evidence/raw" --platform ios > "$evidence/capture-verification.json"
+          python3 - "$evidence" <<'PYTHON'
+          import pathlib, subprocess, sys
+          evidence = pathlib.Path(sys.argv[1])
+          executables = list(pathlib.Path("build/prospective-derived").glob("Build/Products/Debug-iphonesimulator/**/ValhallaTests.xctest/ValhallaTests"))
+          assert len(executables) == 1, "Executed XCTest binary missing or ambiguous"
+          subprocess.run([sys.executable, "scripts/bind_prospective_capture.py", "--platform", "ios",
+              "--capture", str(evidence / "raw"), "--native-receipt",
+              "build/apple/valhalla-wrapper.xcframework/native-package.provenance.json",
+              "--executable", str(executables[0]), "--output", str(evidence / "provenance.json")], check=True)
+          PYTHON
       - name: Upload native XCTest evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ios-trace-test-evidence
           path: build/test-evidence/ios
+
+      - name: Publish bounded prospective evidence
+        if: ${{ always() && inputs.prospective_capture }}
+        shell: bash
+        run: |
+          python3 scripts/prospective_trace_capture.py publish \
+            --private build/prospective-private/ios --output build/prospective-published/ios
+      - name: Upload bounded prospective raw captures
+        if: ${{ always() && inputs.prospective_capture }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-prospective-raw-capture
+          path: build/prospective-published/ios
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload prospective source verification
+        if: ${{ always() && inputs.prospective_capture }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-prospective-source-verification
+          path: |
+            build/prospective-source/artifact-metadata.json
+            build/prospective-source/graph-attestation-verification.json
+            build/prospective-stage-receipt.json
+          if-no-files-found: error
+          retention-days: 7
 
   test-android-trace:
     needs: build-aar
@@ -440,6 +545,25 @@ jobs:
               }.items():
                   env.write(str(key) + "=" + str(value) + "\n")
           PY
+      - name: Stage the exact reviewed prospective source and requests
+        if: ${{ inputs.prospective_capture }}
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/fetch_prospective_source.py --output build/prospective-source
+          python3 scripts/prospective_trace_capture.py stage \
+            --archive build/prospective-source/artifact.zip --output build/prospective-input \
+            > build/prospective-stage-receipt.json
+          python3 - <<'PYTHON'
+          import hashlib, os, pathlib
+          root = pathlib.Path("build/prospective-input").resolve()
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write("VALHALLA_PROSPECTIVE_INPUT=" + str(root) + "\n")
+              env.write("VALHALLA_PROSPECTIVE_STAGE_SHA256=" + hashlib.sha256((root / "stage.json").read_bytes()).hexdigest() + "\n")
+          PYTHON
       - name: Enable emulator acceleration
         shell: bash
         run: |
@@ -487,8 +611,34 @@ jobs:
             android/valhalla/build/outputs/androidTest-results/connected
             android/valhalla/build/reports/androidTests/connected
 
+      - name: Publish bounded prospective evidence
+        if: ${{ always() && inputs.prospective_capture }}
+        shell: bash
+        run: |
+          python3 scripts/prospective_trace_capture.py publish \
+            --private build/prospective-private/android --output build/prospective-published/android
+      - name: Upload bounded prospective raw captures
+        if: ${{ always() && inputs.prospective_capture }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-prospective-raw-capture
+          path: build/prospective-published/android
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload prospective source verification
+        if: ${{ always() && inputs.prospective_capture }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-prospective-source-verification
+          path: |
+            build/prospective-source/artifact-metadata.json
+            build/prospective-source/graph-attestation-verification.json
+            build/prospective-stage-receipt.json
+          if-no-files-found: error
+          retention-days: 7
+
   release:
-    if: ${{ inputs.publish_release }}
+    if: ${{ inputs.publish_release && !inputs.prospective_capture }}
     needs: [create-xcframework, build-aar, test-ios-trace, test-android-trace]
     runs-on: ubuntu-latest
     permissions:

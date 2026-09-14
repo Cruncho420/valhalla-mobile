@@ -1,0 +1,121 @@
+# Prospective native capture preparation
+
+This is opt-in test tooling, not release admission or matcher acceptance.
+It executes only independently reviewed public-source request bytes.
+Native returns cannot create road labels, and no collector creates a consumer/stitch receipt.
+Raw UTF-8 bytes mean the exact request supplied to, and string returned by, the platform wrapper;
+they are not a claim about historical production network serialization.
+
+## Frozen single-window authority
+
+`test-fixtures/prospective-v1/manifest.json` is copied without reserialization from the reviewed
+`prospective-request-stage-v1/requests` artifact.
+Its file SHA-256 is `0729b13a8334f964d72d57ac275c4f4082e8ec5f21cb2b41c6a401d6f9e59abc`.
+Its request contract is `1d1ef0680d7407f4b6cd9f8a2df8b9819a0d9b026c1a596705700d0c4391feab`;
+its independent source oracle is `de25d03fbc65e4b119fbf051881356bd10de2ede98ece90b5eb369347b28b669`.
+The enclosing reviewed request-stage contract is
+`0cdb9ffb5c45309ff6e1b25fba6675de6cef2b05002e20db6aadce4379acba60`.
+The manifest fixes all 55 public fixtures, original/resampled variants, split, window bounds,
+and exact original/diagnostic request sizes and hashes.
+The 110 diagnostic requests execute once in manifest order;
+all 110 original requests are retained as source evidence, without additional native calls.
+Only the diagnostic attribute additions already frozen by that source contract are used.
+An extra request, altered byte, missing file, or alternative manifest is refused before execution.
+The original group remains independently pinned; the combined run does not replace its manifest.
+
+## Reviewed additive group
+
+`test-fixtures/prospective-composite-v1/manifest.json` retains the separately reviewed 33 windows:
+24 long-route/short-tail companions and 9 dense source windows.
+Its exact file SHA-256 is `cba47d133c2d6ff62d95139baca0ed5c5d5295971f9ac486325a10b6aeb6347b`;
+its request contract is `b487eebba7e3743b5909bdfd8edc538b78592ff3b351aff9fe416f2a3d83e477`.
+Its enclosing request-stage contract is
+`110a7465be2e484d15b6d90f941d24a49b00beda9246c7c288407810a35ae279`;
+the underlying composite source protocol v2 is
+`f6288c3b2e10d7baed4aaf7ce72cdf1c30e09ff1cc7d5fbf651eb84325526894`.
+The exact manifest retains the additional source authority pins and all 66 request-file identities.
+Every `windowIndex`, global window boundary, `sourceInputIndices`, and `originalSourceIndices`
+is copied without flattening, renumbering, or calculating labels from native responses.
+The 193-point original tail retains indices 184 through 192, including eight shared samples
+and one new sample; its resampled companion remains a separate frozen sequence.
+
+The stage records two ordered manifest groups and 143 calls: the original 110, then these 33.
+A row has a separate global capture `index`; that index never replaces source or window indices.
+Both collectors now require all 143 calls, and the host re-derives exact identities from both
+pinned manifests before admitting a capture.
+An old 110-only receipt, missing/duplicated window, self-consistently renumbered tail, or unreviewed
+third group is refused.
+This expands capture preparation only; consumer preservation and multiwindow product admission
+remain separate and unproven.
+
+## Exact source graph
+
+The graph is not the existing bundled native-test graph and is not rebuilt.
+GitHub artifact **10341602724** belongs to source run **34828738835** at source workflow revision
+`8d7a40f450e32efdec0c2c41863b768085593579`.
+**47303160 is an attestation ID, not an artifact ID.**
+The source ZIP digest is `4f15fea95e686b0924fc4e14a113f09101ea3ef562ee34682b6da34c771af6ea`;
+its compressed graph digest is `d69510b46c5d1d2663ea0ac095039b80406ad51edb26db016401e7b80aa18c6c`.
+The decompressed extract is exactly 3,051,520 bytes with digest
+`c0957c92bb71833ed3763e4b2c42a536cb28f2bcb69c991264532485edee75d4`.
+This is the graph independently enumerated by census run 34832376641, not an inference from a polygon.
+The fetcher checks live artifact/run/digest identity, the explicit attestation bundle ID,
+and `gh attestation verify` against both the pinned source and signer revisions.
+A missing or expired retained artifact stops the workflow; there is no latest-graph fallback.
+No graph or downloaded binary is checked into this repository.
+
+## Isolated execution and receipts
+
+`prospective_capture` defaults false.
+Combining it with `publish_release=true` fails in a prerequisite before either native build root;
+the release job also independently excludes prospective capture.
+Existing six-method native behavior, graphs, and result requirements are unchanged.
+Android first completes that verified instrumentation run, then copies the admitted stage into
+an absent test-owned private directory and runs only the new collector.
+iOS runs its collector in a separate XCTest invocation with the same run's verified local framework.
+The actor receives a separate config whose only template change is the exact staged graph path.
+Every capture records the original fixture/variant/split/window identity, row order, request and
+response hashes/sizes, stage hash, graph hash, actual config hash, and producing ABI.
+The raw response is retained whole, including native refusals and every alternate;
+no response field is used as an expected road label.
+A bridge exception, missing row, altered byte, unsupported ABI, or oversize return is incomplete,
+never a partial success or a response truncated to fit the limit.
+
+Android reads and hashes the actual loaded library and binds it to the verified test APK/AAR chain.
+iOS records the actual executing XCTest bundle's hash and ABI, then the host compares that
+bundle on disk and records the same-run package/source authority.
+Host provenance includes workflow run/attempt, wrapper/core/patch source identity,
+collector source hash, executed binary identity, and capture/config/graph/stage hashes.
+These are trusted-workflow receipts, not independent signatures against a malicious producer.
+They do not establish user-device acceptance or faithful production consumer behavior.
+
+The current runtime targets are Android x86_64 and the actual selected iOS Simulator ABI.
+Building other ABI slices does not mean those slices executed this cohort.
+Physical iPhone/Android arm64, 32-bit behavior, consumer preservation, and product acceptance
+require separate reviewed evidence.
+
+## Bounds and failure publication
+
+Each raw response is limited to 1 MiB, every run to the exact 143 planned calls,
+and raw artifact publication to 128 MiB.
+The collectors publish a completion receipt only after every return is saved.
+The host verifies exact file inventory and bytes, not just successful XCTest/Gradle status.
+Inputs, native build logs, result bundles, and transfer archives stay outside the upload root.
+Only bounded raw files and compact verification/provenance/publication receipts are uploaded;
+invalid or oversized publication emits a small `INCOMPLETE` receipt.
+Partial bounded raw returns remain useful failure evidence, and are explicitly incomplete.
+Old capture/input directories and published destinations are never overwritten.
+
+## Host checks and later execution
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_prospective*.py' -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_android_trace_runner.py -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_native_test_results.py -v
+```
+
+These checks use synthetic responses and never execute the native matcher.
+Swift parsing and workflow YAML parsing are preparation checks, not native compilation.
+After independent review and explicit CI authorization, artifact-only dispatch uses
+`prospective_capture=true,publish_release=false` on the exact reviewed revision.
+No dispatch, native outcomes, consumer receipt, or production release is authorized by this document.
