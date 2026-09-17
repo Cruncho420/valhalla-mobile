@@ -24,7 +24,10 @@ class ValhallaProspectiveTraceCaptureTest {
       MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
   private fun read(file: File, limit: Int): ByteArray {
-    requireCapture(file.isFile && file.canonicalFile == file.absoluteFile && file.length() <= limit)
+    // filesDir is reached through /data/user/0, which canonicalizes to /data/data, so an absolute
+    // path can never equal its canonical form here. Inside an already-canonical root, a file that
+    // resolves to itself is the same refusal of symlinks and traversal without that false failure.
+    requireCapture(file.isFile && file.canonicalFile == file && file.length() <= limit)
     val bytes = file.inputStream().use { stream ->
       val output = java.io.ByteArrayOutputStream()
       val buffer = ByteArray(8192)
@@ -43,8 +46,8 @@ class ValhallaProspectiveTraceCaptureTest {
   @Test
   fun frozenProspectiveCapture() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
-    val root = File(context.filesDir, "prospective-input")
-    val directory = File(context.filesDir, "prospective-capture")
+    val root = File(context.filesDir, "prospective-input").canonicalFile
+    val directory = File(context.filesDir, "prospective-capture").canonicalFile
     requireCapture(!directory.exists())
     val expectedStage = InstrumentationRegistry.getArguments().getString("prospectiveStageSha256")
     requireCapture(expectedStage != null)
