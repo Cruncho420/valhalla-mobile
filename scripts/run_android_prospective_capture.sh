@@ -26,6 +26,13 @@ if [ "$capture_status" = 0 ]; then
   python3 scripts/prospective_trace_capture.py unpack --archive "$evidence/capture.tar" \
     --output "$evidence/raw" || capture_status=$?
 fi
+# The instrumentation transcript and the collector directory listing are the only evidence of
+# why a capture produced nothing, and the private evidence directory is never uploaded.
+diagnostics="$PWD/build/test-evidence/android"
+mkdir -p "$diagnostics"
+head -c 65536 "$evidence/instrumentation.txt" > "$diagnostics/prospective-instrumentation.txt" || true
+adb exec-out run-as "$VALHALLA_PROSPECTIVE_TARGET" sh -c 'ls -l files files/prospective-capture' \
+  2>&1 | head -c 65536 > "$diagnostics/prospective-files-listing.txt" || true
 if [ "$status" != 0 ]; then exit "$status"; fi
 if [ "$capture_status" != 0 ]; then exit "$capture_status"; fi
 python3 - "$evidence/instrumentation.txt" <<'PY'
