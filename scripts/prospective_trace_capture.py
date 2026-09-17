@@ -56,7 +56,8 @@ MAX_RESPONSE = 1024 * 1024
 MAX_TOTAL = 128 * 1024 * 1024
 MAX_LIBRARY = 256 * 1024 * 1024
 LIBRARY_NAME = 'libvalhalla-wrapper.so'
-MAPS_LINE = re.compile(r'[0-9a-f]+-[0-9a-f]+ +[rwxsp-]{4} +[0-9a-f]+ +[0-9a-f:]+ +[0-9]+ +(/\S+)')
+MAPS_LINE = re.compile(r'[0-9a-f]+-[0-9a-f]+ +([rwxsp-]{4}) +[0-9a-f]+ +[0-9a-f:]+ +[0-9]+ +(/\S+)')
+ELF_MACHINE = {'x86_64': 62, 'arm64-v8a': 183}
 
 
 class InvalidCapture(ValueError):
@@ -201,40 +202,48 @@ def admit_importer_requests(root):
     return rows
 
 
-def mapped_library_path(lines):
-    """Collapse a library's segment mappings to the one file they all name, or refuse."""
+def mapped_apk_path(lines):
+    """Return the one executing APK these mappings name, or refuse.
+
+    With extractNativeLibs=false the loader maps the library out of the APK, so a mapping names
+    the APK. Several segments of one APK collapse; a second APK, a "(deleted)" path or an APK
+    with no executable segment is refused rather than silently preferred.
+    """
     require(isinstance(lines, list) and 0 < len(lines) <= 32)
-    paths = []
+    paths, executable = [], False
     for line in lines:
         require(isinstance(line, str) and len(line) <= 512)
         match = MAPS_LINE.fullmatch(line)
         require(match is not None)
-        path = match.group(1)
-        # Several segments of one file collapse; a second distinct path is a second binary.
-        require(path.endswith('/' + LIBRARY_NAME))
+        permissions, path = match.group(1), match.group(2)
+        require(path.startswith('/data/app/') and path.endswith('.apk'))
         if path not in paths:
             paths.append(path)
-    require(len(paths) == 1)
+        if permissions[2] == 'x':
+            executable = True
+    require(len(paths) == 1 and executable)
     return paths[0]
 
 
 def admit_native_library(receipt):
-    """Bind the executing ABI to the actually mapped library, not to an extraction directory."""
+    """Bind the executing ABI to the mapped APK and the process's own ELF, not to a device list."""
     library = receipt.get('nativeLibrary')
     require(isinstance(library, dict)
-            and set(library) == {'path', 'source', 'sha256', 'bytes', 'mappings',
-                                 'capturedAfterCallIndex'})
+            and set(library) == {'path', 'source', 'sha256', 'bytes', 'mappings', 'entryPath',
+                                 'processElfMachine', 'capturedAfterCallIndex'})
     # The mapping exists only once the first call has resolved the JNI entry points, so the
     # proof is taken there and nowhere else; a drifting index is a changed proof, not a detail.
     require(library['capturedAfterCallIndex'] == 0)
-    path = mapped_library_path(library['mappings'])
-    require(library['path'] == path)
-    require(library['source'] == ('apk-entry' if '!/' in path else 'file'))
-    require(path.endswith(f"/lib/{receipt['abi']}/{LIBRARY_NAME}"))
+    path = mapped_apk_path(library['mappings'])
+    require(library['path'] == path and library['source'] == 'apk-entry')
+    # The entry is the one built for the architecture the kernel says is executing.
+    require(ELF_MACHINE.get(receipt['abi']) == library['processElfMachine'])
+    require(library['entryPath'] == f"lib/{receipt['abi']}/{LIBRARY_NAME}")
     require(library['sha256'] == receipt['nativeLibrarySha256'])
     require(isinstance(library['bytes'], int) and 0 < library['bytes'] <= MAX_LIBRARY)
     return dict(path=path, source=library['source'], sha256=library['sha256'],
-                bytes=library['bytes'], capturedAfterCallIndex=0)
+                bytes=library['bytes'], entryPath=library['entryPath'],
+                processElfMachine=library['processElfMachine'], capturedAfterCallIndex=0)
 
 
 def payload_kinds(row):

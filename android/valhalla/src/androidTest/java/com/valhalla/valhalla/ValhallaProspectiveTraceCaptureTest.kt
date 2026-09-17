@@ -100,62 +100,74 @@ class ValhallaProspectiveTraceCaptureTest {
     var mappedSource = ""
     var capturedAfterCall = -1
     var libraryFailure: String? = null
+    var processMachine = 0
+    var processAbi = ""
+    var entryPath = ""
     ValhallaRaw(File(directory, "config.json").absolutePath).use { actor ->
-      // The wrapper is not mapped until the first native call resolves the JNI entry points, so
-      // prove the executing ABI from the mapping taken right after that call, never from the
-      // extraction directory: this APK sets extractNativeLibs=false and nativeLibraryDir is empty.
+      // The wrapper is not mapped until the first native call resolves the JNI entry points, and
+      // with extractNativeLibs=false the loader maps it out of the APK, so /proc/self/maps names
+      // the APK, never the .so. Prove the executing ABI from that APK mapping plus the process's
+      // own ELF, never from nativeLibraryDir or the device's list of supported ABIs.
+      fun elfMachine(bytes: ByteArray): Int {
+        requireCapture(bytes.size >= 20 && bytes[0] == 0x7f.toByte() && bytes[1] == 'E'.code.toByte()
+            && bytes[2] == 'L'.code.toByte() && bytes[3] == 'F'.code.toByte())
+        // 64-bit, little endian.
+        requireCapture(bytes[4] == 2.toByte() && bytes[5] == 1.toByte())
+        return (bytes[18].toInt() and 0xff) or ((bytes[19].toInt() and 0xff) shl 8)
+      }
       fun captureMappedLibrary() {
-        // Record every mapping as it is read, before asserting anything about them: the receipt
-        // is written even when this refuses, so a refusal explains itself in the artifacts
-        // instead of costing another CI round (an earlier attempt printed them, and
-        // instrumentation stdout never reached the uploaded transcript).
+        val apk = File(context.applicationInfo.sourceDir).canonicalFile
+        // Record every candidate mapping as it is read, before asserting anything about it: the
+        // receipt is written even when this refuses, so a refusal explains itself in the
+        // artifacts (instrumentation stdout never reached the uploaded transcript).
         val observed = ArrayList<String>()
+        var executable = false
         File("/proc/self/maps").bufferedReader().use { reader ->
           while (true) {
             val line = reader.readLine() ?: break
-            if (!line.contains(LIBRARY_NAME)) continue
-            if (observed.size >= 64) break
+            val path = line.substringAfter(" /", "").let { if (it.isEmpty()) "" else "/$it" }
+            // Only this process's own installed code; system framework APKs are not candidates.
+            if (!path.startsWith("/data/app/") || !path.contains(".apk")) continue
+            if (observed.size >= 32) break
             observed.add(line.take(512))
             mappingLines.put(line.take(512))
+            // Any other APK — a second package, a split, or a "(deleted)" path — is a second
+            // binary source and is refused rather than silently preferred.
+            requireCapture(path == apk.path)
+            val permissions = line.split(" ")[1]
+            requireCapture(permissions.length == 4)
+            if (permissions[2] == 'x') executable = true
           }
         }
-        requireCapture(observed.size in 1..32)
-        val paths = LinkedHashSet<String>()
-        for (line in observed) {
-          val path = line.substringAfter(" /", "").let { if (it.isEmpty()) "" else "/$it" }
-          requireCapture(path.endsWith(LIBRARY_NAME))
-          paths.add(path)
-        }
-        // A library mapped in several segments is one file; two distinct paths are two binaries.
-        requireCapture(paths.size == 1)
-        mappedPath = paths.first()
-        val marker = mappedPath.indexOf("!/")
-        mappedSource = if (marker < 0) "file" else "apk-entry"
-        val bytes = if (marker < 0) {
-          read(File(mappedPath), 256 * 1048576)
-        } else {
-          val archive = File(mappedPath.substring(0, marker))
-          val entry = mappedPath.substring(marker + 2)
-          requireCapture(archive.isFile && archive.canonicalFile == archive)
-          java.util.zip.ZipFile(archive).use { zip ->
-            val item = checkNotNull(zip.getEntry(entry)) { "Prospective capture incomplete" }
-            requireCapture(item.size in 1..(256L * 1048576))
-            val output = java.io.ByteArrayOutputStream()
-            zip.getInputStream(item).use { stream ->
-              val buffer = ByteArray(65536)
-              while (true) {
-                val count = stream.read(buffer)
-                if (count < 0) break
-                requireCapture(output.size() + count <= 256 * 1048576)
-                output.write(buffer, 0, count)
-              }
+        // The mapped, executing APK: at least one segment of it is executable.
+        requireCapture(observed.isNotEmpty() && executable)
+        mappedPath = apk.path
+        mappedSource = "apk-entry"
+        val exeHeader = ByteArray(20)
+        File("/proc/self/exe").inputStream().use { requireCapture(it.read(exeHeader) == exeHeader.size) }
+        // The kernel's own view of what is executing, not Build.SUPPORTED_ABIS.
+        processMachine = elfMachine(exeHeader)
+        requireCapture(Process.is64Bit() && (processMachine == 62 || processMachine == 183))
+        processAbi = if (processMachine == 62) "x86_64" else "arm64-v8a"
+        entryPath = "lib/$processAbi/$LIBRARY_NAME"
+        requireCapture(apk.isFile && apk.canonicalFile == apk)
+        val bytes = java.util.zip.ZipFile(apk).use { zip ->
+          val item = checkNotNull(zip.getEntry(entryPath)) { "Prospective capture incomplete" }
+          requireCapture(item.size in 1..(256L * 1048576))
+          val output = java.io.ByteArrayOutputStream()
+          zip.getInputStream(item).use { stream ->
+            val buffer = ByteArray(65536)
+            while (true) {
+              val count = stream.read(buffer)
+              if (count < 0) break
+              requireCapture(output.size() + count <= 256 * 1048576)
+              output.write(buffer, 0, count)
             }
-            output.toByteArray()
           }
+          output.toByteArray()
         }
-        requireCapture(bytes.size >= 20 && bytes[0] == 0x7f.toByte() && bytes[1] == 'E'.code.toByte())
-        requireCapture(bytes[4] == 2.toByte() && bytes[5] == 1.toByte() && Process.is64Bit())
-        requireCapture(bytes[18] == 62.toByte() && bytes[19] == 0.toByte())
+        // The chosen entry must be built for the architecture that is actually executing.
+        requireCapture(elfMachine(bytes) == processMachine)
         nativeSha = digest(bytes)
         nativeBytes = bytes.size.toLong()
       }
@@ -200,9 +212,10 @@ class ValhallaProspectiveTraceCaptureTest {
       }
     }
     val receipt = JSONObject().put("version", 1).put("complete", complete).put("platform", "android")
-        .put("abi", "x86_64").put("nativeLibrarySha256", nativeSha)
+        .put("abi", processAbi).put("nativeLibrarySha256", nativeSha)
         .put("nativeLibrary", JSONObject().put("path", mappedPath).put("source", mappedSource)
             .put("sha256", nativeSha).put("bytes", nativeBytes).put("mappings", mappingLines)
+            .put("processElfMachine", processMachine).put("entryPath", entryPath)
             .put("capturedAfterCallIndex", capturedAfterCall).also { library ->
               val failure = libraryFailure
               if (failure != null) library.put("failureClass", failure)

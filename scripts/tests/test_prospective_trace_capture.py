@@ -87,10 +87,10 @@ class CaptureTests(unittest.TestCase):
                 captured.append(dict(identity=row, requestSha256=capture.sha(request), requestBytes=len(request),
                                      responseSha256=capture.sha(response), responseBytes=len(response), returned=True))
             mapping = ('7f8e2c000000-7f8e2c200000 r--p 00000000 fd:03 1234 '
-                       '/data/app/~~a==/com.valhalla.valhalla.test-b==/base.apk'
-                       '!/lib/x86_64/libvalhalla-wrapper.so')
+                       '/data/app/~~a==/com.valhalla.valhalla.test-b==/base.apk')
             library = dict(path=mapping.split(' ')[-1], source='apk-entry', sha256='a' * 64,
                            bytes=4096, mappings=[mapping, mapping.replace('r--p', 'r-xp')],
+                           entryPath='lib/x86_64/libvalhalla-wrapper.so', processElfMachine=62,
                            capturedAfterCallIndex=0)
             receipt = dict(version=1, complete=True, stageSha256=capture.sha(raw_stage),
                            extractSha256=capture.sha(graph), platform='android', abi='x86_64',
@@ -118,11 +118,15 @@ class CaptureTests(unittest.TestCase):
                     # a mismatched path, a wrong ABI directory or an unbound hash.
                     lambda r: r['nativeLibrary']['mappings'].append(
                         r['nativeLibrary']['mappings'][0].replace('base.apk', 'split.apk')),
-                    lambda r: r['nativeLibrary'].update(path='/lib/x86_64/libvalhalla-wrapper.so'),
+                    lambda r: r['nativeLibrary'].update(path='/data/app/other/base.apk'),
                     lambda r: r['nativeLibrary'].update(source='file'),
                     lambda r: r['nativeLibrary'].update(sha256='b' * 64),
+                    # The executing architecture, the chosen entry and the mapped APK must agree.
+                    lambda r: r['nativeLibrary'].update(processElfMachine=183),
+                    lambda r: r['nativeLibrary'].update(
+                        entryPath='lib/arm64-v8a/libvalhalla-wrapper.so'),
                     lambda r: r['nativeLibrary'].update(mappings=[
-                        r['nativeLibrary']['mappings'][0].replace('x86_64', 'arm64-v8a')]),
+                        r['nativeLibrary']['mappings'][0]]),
                     lambda r: r['nativeLibrary'].update(mappings=[]),
                     # The proof is taken after the first call and must say so.
                     lambda r: r['nativeLibrary'].update(capturedAfterCallIndex=1),
@@ -245,21 +249,26 @@ class CaptureTests(unittest.TestCase):
             with self.assertRaises(capture.InvalidCapture):
                 capture.publish(private, root/'published')
 
-    def test_mapped_library_path_collapses_segments_and_refuses_a_second_binary(self):
-        base = ('7f8e2c000000-7f8e2c200000 r--p 00000000 fd:03 1234 '
-                '/data/app/~~a==/com.valhalla.valhalla.test-b==/base.apk'
-                '!/lib/x86_64/libvalhalla-wrapper.so')
-        segments = [base, base.replace('r--p', 'r-xp'), base.replace('r--p', 'rw-p')]
-        self.assertEqual(capture.mapped_library_path(segments), base.split(' ')[-1])
-        extracted = ('7f8e2c000000-7f8e2c200000 r-xp 00000000 fd:03 9 '
-                     '/data/app/~~a==/pkg-b==/lib/x86_64/libvalhalla-wrapper.so')
-        self.assertEqual(capture.mapped_library_path([extracted]), extracted.split(' ')[-1])
-        for refused in ([], [base, extracted], [base, base.replace('base.apk', 'split.apk')],
-                        ['libvalhalla-wrapper.so'], [base + ' (deleted)'], [base] * 33,
-                        [base.replace('libvalhalla-wrapper.so', 'libother.so')]):
-            with self.subTest(lines=len(refused)):
+    def test_mapped_apk_path_requires_one_executing_apk(self):
+        apk = '/data/app/~~a==/com.valhalla.valhalla.test-b==/base.apk'
+        read_only = f'7f8e2c000000-7f8e2c200000 r--p 00000000 fd:03 1234 {apk}'
+        executable = read_only.replace('r--p', 'r-xp')
+        self.assertEqual(capture.mapped_apk_path([read_only, executable]), apk)
+        self.assertEqual(capture.mapped_apk_path([executable]), apk)
+        cases = {
+            'no executable segment': [read_only, read_only.replace('r--p', 'rw-p')],
+            'deleted path': [executable + ' (deleted)'],
+            'second apk': [executable, executable.replace('base.apk', 'split_config.apk')],
+            'second package': [executable, executable.replace('com.valhalla.valhalla.test', 'other')],
+            'not installed code': [executable.replace('/data/app/', '/system/framework/')],
+            'empty': [],
+            'too many': [executable] * 33,
+            'malformed': ['libvalhalla-wrapper.so'],
+        }
+        for name, lines in cases.items():
+            with self.subTest(case=name):
                 with self.assertRaises(capture.InvalidCapture):
-                    capture.mapped_library_path(refused)
+                    capture.mapped_apk_path(lines)
 
     def test_publication_salvages_capture_tar_when_unpack_left_no_raw(self):
         # A malformed collector tar must not cost a 45-minute build its only raw evidence.
