@@ -102,19 +102,27 @@ class ValhallaProspectiveTraceCaptureTest {
       // The library is mapped by ValhallaRaw's constructor. Prove the executing ABI from that
       // mapping, not from the extraction directory: this APK sets extractNativeLibs=false, so
       // nativeLibraryDir holds no file and the loader maps the .so straight out of the APK.
-      var lines = 0
-      val paths = LinkedHashSet<String>()
+      val observed = ArrayList<String>()
       File("/proc/self/maps").bufferedReader().use { reader ->
         while (true) {
           val line = reader.readLine() ?: break
           if (!line.contains(LIBRARY_NAME)) continue
-          lines += 1
-          requireCapture(lines <= 32 && line.length <= 512)
-          mappingLines.put(line)
-          val path = line.substringAfter(" /", "").let { if (it.isEmpty()) "" else "/$it" }
-          requireCapture(path.endsWith(LIBRARY_NAME))
-          paths.add(path)
+          if (observed.size >= 64) break
+          observed.add(line)
         }
+      }
+      // Print the mappings before asserting anything about them: the instrumentation transcript
+      // is uploaded, so a refusal here explains itself instead of costing another CI round.
+      println("PROSPECTIVE_MAPPING_COUNT: " + observed.size)
+      observed.forEach { println("PROSPECTIVE_MAPPING: " + it.take(512)) }
+      requireCapture(observed.size in 1..32)
+      val paths = LinkedHashSet<String>()
+      for (line in observed) {
+        requireCapture(line.length <= 512)
+        mappingLines.put(line)
+        val path = line.substringAfter(" /", "").let { if (it.isEmpty()) "" else "/$it" }
+        requireCapture(path.endsWith(LIBRARY_NAME))
+        paths.add(path)
       }
       // A library mapped in several segments is one file; two distinct paths are two binaries.
       requireCapture(paths.size == 1)
