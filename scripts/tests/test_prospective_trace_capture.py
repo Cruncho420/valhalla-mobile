@@ -90,7 +90,8 @@ class CaptureTests(unittest.TestCase):
                        '/data/app/~~a==/com.valhalla.valhalla.test-b==/base.apk'
                        '!/lib/x86_64/libvalhalla-wrapper.so')
             library = dict(path=mapping.split(' ')[-1], source='apk-entry', sha256='a' * 64,
-                           bytes=4096, mappings=[mapping, mapping.replace('r--p', 'r-xp')])
+                           bytes=4096, mappings=[mapping, mapping.replace('r--p', 'r-xp')],
+                           capturedAfterCallIndex=0)
             receipt = dict(version=1, complete=True, stageSha256=capture.sha(raw_stage),
                            extractSha256=capture.sha(graph), platform='android', abi='x86_64',
                            configSha256=capture.sha(config), nativeLibrarySha256='a' * 64,
@@ -123,6 +124,11 @@ class CaptureTests(unittest.TestCase):
                     lambda r: r['nativeLibrary'].update(mappings=[
                         r['nativeLibrary']['mappings'][0].replace('x86_64', 'arm64-v8a')]),
                     lambda r: r['nativeLibrary'].update(mappings=[]),
+                    # The proof is taken after the first call and must say so.
+                    lambda r: r['nativeLibrary'].update(capturedAfterCallIndex=1),
+                    lambda r: r['nativeLibrary'].update(capturedAfterCallIndex=-1),
+                    lambda r: r['nativeLibrary'].pop('capturedAfterCallIndex'),
+                    lambda r: r['nativeLibrary'].update(failureClass='java.lang.Exception'),
                     lambda r: r.pop('nativeLibrary'),
                 ]
                 for mutate in mutations:

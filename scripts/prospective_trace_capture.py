@@ -222,14 +222,19 @@ def admit_native_library(receipt):
     """Bind the executing ABI to the actually mapped library, not to an extraction directory."""
     library = receipt.get('nativeLibrary')
     require(isinstance(library, dict)
-            and set(library) == {'path', 'source', 'sha256', 'bytes', 'mappings'})
+            and set(library) == {'path', 'source', 'sha256', 'bytes', 'mappings',
+                                 'capturedAfterCallIndex'})
+    # The mapping exists only once the first call has resolved the JNI entry points, so the
+    # proof is taken there and nowhere else; a drifting index is a changed proof, not a detail.
+    require(library['capturedAfterCallIndex'] == 0)
     path = mapped_library_path(library['mappings'])
     require(library['path'] == path)
     require(library['source'] == ('apk-entry' if '!/' in path else 'file'))
     require(path.endswith(f"/lib/{receipt['abi']}/{LIBRARY_NAME}"))
     require(library['sha256'] == receipt['nativeLibrarySha256'])
     require(isinstance(library['bytes'], int) and 0 < library['bytes'] <= MAX_LIBRARY)
-    return dict(path=path, source=library['source'], sha256=library['sha256'], bytes=library['bytes'])
+    return dict(path=path, source=library['source'], sha256=library['sha256'],
+                bytes=library['bytes'], capturedAfterCallIndex=0)
 
 
 def payload_kinds(row):
