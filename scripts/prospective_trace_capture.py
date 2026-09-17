@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tarfile
 import tempfile
@@ -147,6 +148,8 @@ def admit_trip_requests(root):
         require(len(data) == item['bytes'] and sha(data) == item['sha256'])
         request = decode(data)
         require(set(request) == {'shape', 'costing', 'shape_match'})
+        # Mirror the importer admitter: the production request shape is not just a key set.
+        require(request['costing'] == 'auto' and request['shape_match'] == 'map_snap')
         require(row['sourceInputIndices'] == list(range(len(request['shape']))))
     require({p.name for p in root.iterdir()} == names)
     return rows
@@ -329,6 +332,7 @@ def verify(stage_dir, output, platform):
     require(read(output / 'stage.json', 256 * 1024) == stage_bytes)
     require(len(receipt['rows']) == len(expected_rows))
     names = {'receipt.json', 'config.json', 'stage.json'}
+    refused = 0
     for index, (actual, expected) in enumerate(zip(receipt['rows'], expected_rows)):
         require(actual['identity'] == expected)
         request_name, response_name = f'{index:03d}.request.json', f'{index:03d}.response.raw'
@@ -338,9 +342,18 @@ def verify(stage_dir, output, platform):
         require(request == read(stage_dir / execution_item(expected)['file'], 8192))
         require(actual['requestSha256'] == sha(request) and actual['requestBytes'] == len(request))
         require(actual['responseSha256'] == sha(response) and actual['responseBytes'] == len(response))
-        require(actual['returned'] is True)
+        # A complete capture never carries an oversize marker; a refusal row is real evidence
+        # and must name the native failure class instead of asserting a return that never came.
+        require('oversize' not in actual)
+        if actual['returned'] is False:
+            require(isinstance(actual.get('failureClass'), str) and 0 < len(actual['failureClass']) <= 200)
+            require(len(response) == 0)
+            refused += 1
+        else:
+            require(actual['returned'] is True and 'failureClass' not in actual)
     require({p.name for p in files} == names)
-    return dict(version=1, complete=True, requestCount=REQUEST_COUNT, platform=platform, abi=receipt['abi'],
+    return dict(version=1, complete=True, requestCount=REQUEST_COUNT, refusedCount=refused,
+                platform=platform, abi=receipt['abi'],
                 stageSha256=sha(stage_bytes), receiptSha256=sha(read(output / 'receipt.json', 256*1024)),
                 matcherCorrectnessAdmitted=False, consumerPreservationAdmitted=False,
                 binaryProvenanceAdmitted=False)
@@ -377,10 +390,11 @@ def publish(private_root, destination):
         staged = Path(temp) / 'published'
         staged.mkdir()
         status = 'INCOMPLETE'
+        failure, total = None, 0
         try:
             raw = private_root / 'raw'
             require(raw.is_dir() and not raw.is_symlink())
-            count, total = 0, 0
+            count = 0
             for path in raw.iterdir():
                 count += 1
                 require(count <= CAPTURE_FILES)
@@ -406,14 +420,25 @@ def publish(private_root, destination):
                         and proof.get('captureReceiptSha256') == sha(receipt_bytes)
                         and proof.get('stageSha256') == verification.get('stageSha256')):
                     status = 'CAPTURE_COMPLETE_UNCERTIFIED'
-        except (InvalidCapture, OSError, ValueError, KeyError, TypeError):
-            # Only this private, newly created publication scratch is discarded.
-            import shutil
-            shutil.rmtree(staged)
-            staged.mkdir()
-        (staged / 'publication.json').write_bytes(encoded(dict(version=1, status=status,
-                    matcherCorrectnessAdmitted=False, consumerPreservationAdmitted=False,
-                    productionReadinessAdmitted=False)))
+        except (InvalidCapture, OSError, ValueError, KeyError, TypeError) as error:
+            # Never discard evidence on error. Every file already staged passed its name and
+            # size bound before it was written, so the partial publication stays bounded, and
+            # the collector tar a failed unpack left behind is salvaged beside it.
+            failure = type(error).__name__
+        publication = dict(version=1, status=status, matcherCorrectnessAdmitted=False,
+                           consumerPreservationAdmitted=False, productionReadinessAdmitted=False)
+        if failure is not None:
+            archive = private_root / 'capture.tar'
+            salvaged = False
+            if archive.is_file() and not archive.is_symlink():
+                size = archive.stat().st_size
+                # Copied whole or not at all; a partial tar would be an invented truncation.
+                if 0 < size <= MAX_TOTAL - total:
+                    shutil.copyfile(archive, staged / 'capture.tar')
+                    salvaged = True
+            publication.update(failure=failure, salvagedCaptureTar=salvaged,
+                               retainedFiles=len(list(staged.iterdir())))
+        (staged / 'publication.json').write_bytes(encoded(publication))
         require(not destination.exists())
         os.rename(staged, destination)
     return {'status': status}

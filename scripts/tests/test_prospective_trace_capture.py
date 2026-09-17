@@ -154,6 +154,25 @@ class CaptureTests(unittest.TestCase):
                 with self.assertRaises(capture.InvalidCapture):
                     capture.verify(stage, output, 'android')
                 save(receipt)
+                # Fail-first: a refusal row is admitted only when it names the native failure
+                # class and carries no bytes, and an oversize marker is never a complete capture.
+                first = (output / '000.response.raw').read_bytes()
+                (output / '000.response.raw').write_bytes(b'')
+                refusal = copy.deepcopy(receipt)
+                refusal['rows'][0].update(returned=False, failureClass='java.lang.IllegalStateException',
+                                          responseSha256=capture.sha(b''), responseBytes=0)
+                save(refusal)
+                self.assertEqual(capture.verify(stage, output, 'android')['refusedCount'], 1)
+                for mutate in (lambda r: r['rows'][0].pop('failureClass'),
+                               lambda r: r['rows'][0].update(returned=True),
+                               lambda r: r['rows'][0].update(oversize=True)):
+                    changed = copy.deepcopy(refusal)
+                    mutate(changed)
+                    save(changed)
+                    with self.assertRaises(capture.InvalidCapture):
+                        capture.verify(stage, output, 'android')
+                (output / '000.response.raw').write_bytes(first)
+                save(receipt)
                 path = output / '000.response.raw'
                 original = path.read_bytes()
                 for changed in [original + b' ', b'x' * (capture.MAX_RESPONSE + 1)]:
@@ -202,6 +221,70 @@ class CaptureTests(unittest.TestCase):
             self.assertEqual({p.name for p in (root/'published').iterdir()}, {'000.response.raw','publication.json'})
             with self.assertRaises(capture.InvalidCapture):
                 capture.publish(private, root/'published')
+
+    def test_publication_salvages_capture_tar_when_unpack_left_no_raw(self):
+        # A malformed collector tar must not cost a 45-minute build its only raw evidence.
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            (root / 'private').mkdir()
+            (root / 'private/capture.tar').write_bytes(b'truncated collector archive')
+            result = capture.publish(root / 'private', root / 'published')
+            self.assertEqual(result['status'], 'INCOMPLETE')
+            self.assertEqual({p.name for p in (root / 'published').iterdir()},
+                             {'capture.tar', 'publication.json'})
+            import json
+            publication = json.loads((root / 'published/publication.json').read_text())
+            self.assertTrue(publication['salvagedCaptureTar'])
+            self.assertEqual(publication['failure'], 'InvalidCapture')
+            self.assertEqual((root / 'published/capture.tar').read_bytes(), b'truncated collector archive')
+
+    def test_publication_keeps_already_staged_raw_when_a_later_file_is_invalid(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            (root / 'private/raw').mkdir(parents=True)
+            (root / 'private/raw/000.response.raw').write_bytes(b'{"code":171}')
+            (root / 'private/raw/receipt.json').write_bytes(b'{"complete":false}')
+            (root / 'private/provenance.json').write_bytes(b'not json')
+            result = capture.publish(root / 'private', root / 'published')
+            self.assertEqual(result['status'], 'INCOMPLETE')
+            self.assertEqual({p.name for p in (root / 'published').iterdir()},
+                             {'000.response.raw', 'receipt.json', 'publication.json'})
+
+    def test_trip_requests_require_production_costing_and_shape_match(self):
+        # The frozen hashes make a tampered body unreachable in production, so this rebuilds a
+        # self-consistent decoy manifest and pins it, proving the field check itself refuses.
+        import json
+        import shutil
+        from unittest.mock import patch
+
+        def rebuild(temp, mutate):
+            root = pathlib.Path(temp) / 'trip'
+            shutil.copytree(ROOT / 'test-fixtures/prospective-trip-v1', root)
+            manifest = json.loads((root / 'manifest.json').read_text())
+            row = manifest['contract']['requests'][0]
+            path = root / row['request']['file']
+            body = json.loads(path.read_text())
+            mutate(body)
+            data = capture.production_encoded(body)
+            path.write_bytes(data)
+            row['request']['bytes'] = len(data)
+            row['request']['sha256'] = capture.sha(data)
+            contract = capture.production_encoded(manifest['contract'])
+            manifest['contractSha256'] = capture.sha(contract)
+            raw = capture.production_encoded(manifest)
+            (root / 'manifest.json').write_bytes(raw)
+            return root, capture.sha(raw), capture.sha(contract)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root, manifest_sha, contract_sha = rebuild(temp, lambda body: None)
+            with patch.object(capture, 'TRIP_SHA', manifest_sha), patch.object(capture, 'TRIP_CONTRACT', contract_sha):
+                self.assertEqual(len(capture.admit_trip_requests(root)), 118)
+        for field, value in (('costing', 'pedestrian'), ('shape_match', 'edge_walk')):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temp:
+                root, manifest_sha, contract_sha = rebuild(temp, lambda body: body.update({field: value}))
+                with patch.object(capture, 'TRIP_SHA', manifest_sha), patch.object(capture, 'TRIP_CONTRACT', contract_sha):
+                    with self.assertRaises(capture.InvalidCapture):
+                        capture.admit_trip_requests(root)
 
     def test_publication_rejects_unbounded_or_unexpected_raw_with_small_failure_receipt(self):
         for filename, data in [('unexpected.log',b'raw internal error'), ('000.response.raw',b'x'*(capture.MAX_RESPONSE+1))]:

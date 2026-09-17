@@ -107,24 +107,45 @@ class ValhallaProspectiveTraceCaptureTest {
     val nativeSha = nativeDigest.digest().joinToString("") { "%02x".format(it) }
     val captured = JSONArray()
     var total = 0L
+    // Set only once the plan ran to its end with every native return inside the declared bounds.
+    var complete = false
     ValhallaRaw(File(directory, "config.json").absolutePath).use { actor ->
-      requests.forEachIndexed { index, (action, request) ->
+      for ((index, entry) in requests.withIndex()) {
+        val (action, request) = entry
         save(request, "%03d.request.json".format(index))
-        val response = (if (action == "trace_attributes") actor.traceAttributes(request.toString(Charsets.UTF_8))
-                        else actor.traceRoute(request.toString(Charsets.UTF_8))).toByteArray(Charsets.UTF_8)
-        total += response.size
-        requireCapture(response.size <= 1048576 && total <= 120L * 1048576)
-        save(response, "%03d.response.raw".format(index))
-        captured.put(JSONObject().put("identity", rows.getJSONObject(index))
+        val row = JSONObject().put("identity", rows.getJSONObject(index))
             .put("requestSha256", digest(request)).put("requestBytes", request.size)
-            .put("responseSha256", digest(response)).put("responseBytes", response.size)
-            .put("returned", true))
+        // A native refusal is evidence, not an excuse to drop the row: record what actually
+        // happened rather than asserting a return that never came back.
+        var returned = false
+        var response = ByteArray(0)
+        try {
+          response = (if (action == "trace_attributes") actor.traceAttributes(request.toString(Charsets.UTF_8))
+                      else actor.traceRoute(request.toString(Charsets.UTF_8))).toByteArray(Charsets.UTF_8)
+          returned = true
+        } catch (error: Exception) {
+          row.put("failureClass", error.javaClass.name)
+        }
+        // Write the bounded bytes before failing, so an oversize return is preserved and marked
+        // rather than silently truncated into an apparently ordinary response.
+        val oversize = response.size > 1048576
+        val stored = if (oversize) response.copyOf(1048576) else response
+        total += stored.size
+        save(stored, "%03d.response.raw".format(index))
+        row.put("returned", returned)
+            .put("responseSha256", digest(stored)).put("responseBytes", stored.size)
+        if (oversize) row.put("oversize", true).put("nativeResponseBytes", response.size)
+        captured.put(row)
+        if (oversize || total > 120L * 1048576) break
+        if (index == requests.size - 1) complete = true
       }
     }
-    val receipt = JSONObject().put("version", 1).put("complete", true).put("platform", "android")
+    val receipt = JSONObject().put("version", 1).put("complete", complete).put("platform", "android")
         .put("abi", "x86_64").put("nativeLibrarySha256", nativeSha)
         .put("stageSha256", digest(stage)).put("extractSha256", digest(graph))
         .put("configSha256", digest(configBytes)).put("rows", captured)
     save(receipt.toString().toByteArray(Charsets.UTF_8), "receipt.json")
+    // Fail loudly only after the bounded evidence and its receipt are on disk.
+    requireCapture(complete)
   }
 }

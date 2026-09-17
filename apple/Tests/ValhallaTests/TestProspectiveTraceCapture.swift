@@ -84,21 +84,40 @@ final class TestProspectiveTraceCapture: XCTestCase {
         let actor = try Valhalla(configPath: destination.appendingPathComponent("config.json").path)
         var captured = [[String: Any]]()
         var total = 0
+        var complete = false
+        var oversizeIndex: Int?
         for (index, request) in requests.enumerated() {
             try save(request.data, String(format: "%03d.request.json", index))
             let raw = String(data: request.data, encoding: .utf8)!
-            let response: Data
+            // The wrapper's raw entry points cannot throw: a native non-return terminates the
+            // process, so no row is written at all. This flag records the observed outcome of
+            // this call instead of a constant, and the host accepts a false alongside a class.
+            var returned = false
+            var response = Data()
             if request.action == "trace_attributes" {
                 response = Data(actor.traceAttributes(rawRequest: raw).utf8)
             } else {
                 response = Data(actor.traceRoute(rawRequest: raw).utf8)
             }
-            total += response.count
-            guard response.count <= 1048576, total <= 120 * 1048576 else { throw refuse() }
-            try save(response, String(format: "%03d.response.raw", index))
-            captured.append(["identity": rows[index], "requestSha256": digest(request.data),
-                             "requestBytes": request.data.count, "responseSha256": digest(response),
-                             "responseBytes": response.count, "returned": true])
+            returned = true
+            // Write the bounded bytes before failing, so an oversize return is preserved and
+            // marked rather than silently truncated into an apparently ordinary response.
+            let oversize = response.count > 1048576
+            let stored = oversize ? response.prefix(1048576) : response[...]
+            total += stored.count
+            try save(Data(stored), String(format: "%03d.response.raw", index))
+            var row: [String: Any] = ["identity": rows[index], "requestSha256": digest(request.data),
+                                      "requestBytes": request.data.count,
+                                      "responseSha256": digest(Data(stored)),
+                                      "responseBytes": stored.count, "returned": returned]
+            if oversize {
+                row["oversize"] = true
+                row["nativeResponseBytes"] = response.count
+                oversizeIndex = index
+            }
+            captured.append(row)
+            if oversize || total > 120 * 1048576 { break }
+            if index == requests.count - 1 { complete = true }
         }
         // The executed XCTest bundle is the actual statically linked consumer executable.
         guard let executable = Bundle(for: Self.self).executableURL else { throw refuse() }
@@ -112,10 +131,12 @@ final class TestProspectiveTraceCapture: XCTestCase {
             executableHasher.update(data: chunk)
         }
         let executableSha = executableHasher.finalize().map { String(format: "%02x", $0) }.joined()
-        let receipt: [String: Any] = ["version": 1, "complete": true, "platform": "ios", "abi": abi,
+        let receipt: [String: Any] = ["version": 1, "complete": complete, "platform": "ios", "abi": abi,
                                      "executableSha256": executableSha, "executableBytes": executableBytes,
                                      "stageSha256": digest(stage), "extractSha256": digest(graph),
                                      "configSha256": digest(configBytes), "rows": captured]
         try save(JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]), "receipt.json")
+        // Fail loudly only after the bounded evidence and its receipt are on disk.
+        guard complete, oversizeIndex == nil else { throw refuse() }
     }
 }
