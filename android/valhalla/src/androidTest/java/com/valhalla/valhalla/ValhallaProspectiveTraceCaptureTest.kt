@@ -16,6 +16,8 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ValhallaProspectiveTraceCaptureTest {
+  private val LIBRARY_NAME = "libvalhalla-wrapper.so"
+
   private fun requireCapture(value: Boolean) {
     check(value) { "Prospective capture incomplete" }
   }
@@ -87,32 +89,65 @@ class ValhallaProspectiveTraceCaptureTest {
     }
     save(stage, "stage.json")
     save(configBytes, "config.json")
-    // Read the actual loaded ABI library, rather than the device's list of supported ABIs.
-    val library = File(context.applicationInfo.nativeLibraryDir, "libvalhalla-wrapper.so")
-    val header = ByteArray(20)
-    library.inputStream().use { requireCapture(it.read(header) == header.size) }
-    requireCapture(header.size == 20 && header[0] == 0x7f.toByte() && header[1] == 'E'.code.toByte())
-    requireCapture(header[4] == 2.toByte() && header[5] == 1.toByte() && Process.is64Bit())
-    requireCapture(header[18] == 62.toByte() && header[19] == 0.toByte())
-    requireCapture(library.length() <= 256L * 1048576)
-    val nativeDigest = MessageDigest.getInstance("SHA-256")
-    library.inputStream().use { stream ->
-      val buffer = ByteArray(65536)
-      var totalBytes = 0L
-      while (true) {
-        val count = stream.read(buffer)
-        if (count < 0) break
-        totalBytes += count
-        requireCapture(totalBytes <= 256L * 1048576)
-        nativeDigest.update(buffer, 0, count)
-      }
-    }
-    val nativeSha = nativeDigest.digest().joinToString("") { "%02x".format(it) }
     val captured = JSONArray()
     var total = 0L
     // Set only once the plan ran to its end with every native return inside the declared bounds.
     var complete = false
+    val mappingLines = JSONArray()
+    var nativeSha = ""
+    var nativeBytes = 0L
+    var mappedPath = ""
+    var mappedSource = ""
     ValhallaRaw(File(directory, "config.json").absolutePath).use { actor ->
+      // The library is mapped by ValhallaRaw's constructor. Prove the executing ABI from that
+      // mapping, not from the extraction directory: this APK sets extractNativeLibs=false, so
+      // nativeLibraryDir holds no file and the loader maps the .so straight out of the APK.
+      var lines = 0
+      val paths = LinkedHashSet<String>()
+      File("/proc/self/maps").bufferedReader().use { reader ->
+        while (true) {
+          val line = reader.readLine() ?: break
+          if (!line.contains(LIBRARY_NAME)) continue
+          lines += 1
+          requireCapture(lines <= 32 && line.length <= 512)
+          mappingLines.put(line)
+          val path = line.substringAfter(" /", "").let { if (it.isEmpty()) "" else "/$it" }
+          requireCapture(path.endsWith(LIBRARY_NAME))
+          paths.add(path)
+        }
+      }
+      // A library mapped in several segments is one file; two distinct paths are two binaries.
+      requireCapture(paths.size == 1)
+      mappedPath = paths.first()
+      val marker = mappedPath.indexOf("!/")
+      mappedSource = if (marker < 0) "file" else "apk-entry"
+      val bytes = if (marker < 0) {
+        read(File(mappedPath), 256 * 1048576)
+      } else {
+        val archive = File(mappedPath.substring(0, marker))
+        val entry = mappedPath.substring(marker + 2)
+        requireCapture(archive.isFile && archive.canonicalFile == archive)
+        java.util.zip.ZipFile(archive).use { zip ->
+          val item = checkNotNull(zip.getEntry(entry)) { "Prospective capture incomplete" }
+          requireCapture(item.size in 1..(256L * 1048576))
+          val output = java.io.ByteArrayOutputStream()
+          zip.getInputStream(item).use { stream ->
+            val buffer = ByteArray(65536)
+            while (true) {
+              val count = stream.read(buffer)
+              if (count < 0) break
+              requireCapture(output.size() + count <= 256 * 1048576)
+              output.write(buffer, 0, count)
+            }
+          }
+          output.toByteArray()
+        }
+      }
+      requireCapture(bytes.size >= 20 && bytes[0] == 0x7f.toByte() && bytes[1] == 'E'.code.toByte())
+      requireCapture(bytes[4] == 2.toByte() && bytes[5] == 1.toByte() && Process.is64Bit())
+      requireCapture(bytes[18] == 62.toByte() && bytes[19] == 0.toByte())
+      nativeSha = digest(bytes)
+      nativeBytes = bytes.size.toLong()
       for ((index, entry) in requests.withIndex()) {
         val (action, request) = entry
         save(request, "%03d.request.json".format(index))
@@ -145,6 +180,8 @@ class ValhallaProspectiveTraceCaptureTest {
     }
     val receipt = JSONObject().put("version", 1).put("complete", complete).put("platform", "android")
         .put("abi", "x86_64").put("nativeLibrarySha256", nativeSha)
+        .put("nativeLibrary", JSONObject().put("path", mappedPath).put("source", mappedSource)
+            .put("sha256", nativeSha).put("bytes", nativeBytes).put("mappings", mappingLines))
         .put("stageSha256", digest(stage)).put("extractSha256", digest(graph))
         .put("configSha256", digest(configBytes)).put("rows", captured)
     save(receipt.toString().toByteArray(Charsets.UTF_8), "receipt.json")

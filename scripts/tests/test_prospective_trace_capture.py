@@ -86,9 +86,15 @@ class CaptureTests(unittest.TestCase):
                 (output / f'{index:03d}.response.raw').write_bytes(response)
                 captured.append(dict(identity=row, requestSha256=capture.sha(request), requestBytes=len(request),
                                      responseSha256=capture.sha(response), responseBytes=len(response), returned=True))
+            mapping = ('7f8e2c000000-7f8e2c200000 r--p 00000000 fd:03 1234 '
+                       '/data/app/~~a==/com.valhalla.valhalla.test-b==/base.apk'
+                       '!/lib/x86_64/libvalhalla-wrapper.so')
+            library = dict(path=mapping.split(' ')[-1], source='apk-entry', sha256='a' * 64,
+                           bytes=4096, mappings=[mapping, mapping.replace('r--p', 'r-xp')])
             receipt = dict(version=1, complete=True, stageSha256=capture.sha(raw_stage),
                            extractSha256=capture.sha(graph), platform='android', abi='x86_64',
-                           configSha256=capture.sha(config), rows=captured)
+                           configSha256=capture.sha(config), nativeLibrarySha256='a' * 64,
+                           nativeLibrary=library, rows=captured)
             with patch.object(capture, 'EXTRACT_SHA', capture.sha(graph)):
                 def save(value):
                     (output / 'receipt.json').write_bytes(capture.encoded(value))
@@ -107,6 +113,17 @@ class CaptureTests(unittest.TestCase):
                     lambda r: r['rows'][0].update(responseSha256='0'*64),
                     lambda r: r['rows'][0]['identity'].update(windowIndex=1),
                     lambda r: r['rows'][0]['identity'].update(variant='decoy'),
+                    # The executing ABI comes from the mapping, never from a second binary,
+                    # a mismatched path, a wrong ABI directory or an unbound hash.
+                    lambda r: r['nativeLibrary']['mappings'].append(
+                        r['nativeLibrary']['mappings'][0].replace('base.apk', 'split.apk')),
+                    lambda r: r['nativeLibrary'].update(path='/lib/x86_64/libvalhalla-wrapper.so'),
+                    lambda r: r['nativeLibrary'].update(source='file'),
+                    lambda r: r['nativeLibrary'].update(sha256='b' * 64),
+                    lambda r: r['nativeLibrary'].update(mappings=[
+                        r['nativeLibrary']['mappings'][0].replace('x86_64', 'arm64-v8a')]),
+                    lambda r: r['nativeLibrary'].update(mappings=[]),
+                    lambda r: r.pop('nativeLibrary'),
                 ]
                 for mutate in mutations:
                     changed = copy.deepcopy(receipt)
@@ -221,6 +238,22 @@ class CaptureTests(unittest.TestCase):
             self.assertEqual({p.name for p in (root/'published').iterdir()}, {'000.response.raw','publication.json'})
             with self.assertRaises(capture.InvalidCapture):
                 capture.publish(private, root/'published')
+
+    def test_mapped_library_path_collapses_segments_and_refuses_a_second_binary(self):
+        base = ('7f8e2c000000-7f8e2c200000 r--p 00000000 fd:03 1234 '
+                '/data/app/~~a==/com.valhalla.valhalla.test-b==/base.apk'
+                '!/lib/x86_64/libvalhalla-wrapper.so')
+        segments = [base, base.replace('r--p', 'r-xp'), base.replace('r--p', 'rw-p')]
+        self.assertEqual(capture.mapped_library_path(segments), base.split(' ')[-1])
+        extracted = ('7f8e2c000000-7f8e2c200000 r-xp 00000000 fd:03 9 '
+                     '/data/app/~~a==/pkg-b==/lib/x86_64/libvalhalla-wrapper.so')
+        self.assertEqual(capture.mapped_library_path([extracted]), extracted.split(' ')[-1])
+        for refused in ([], [base, extracted], [base, base.replace('base.apk', 'split.apk')],
+                        ['libvalhalla-wrapper.so'], [base + ' (deleted)'], [base] * 33,
+                        [base.replace('libvalhalla-wrapper.so', 'libother.so')]):
+            with self.subTest(lines=len(refused)):
+                with self.assertRaises(capture.InvalidCapture):
+                    capture.mapped_library_path(refused)
 
     def test_publication_salvages_capture_tar_when_unpack_left_no_raw(self):
         # A malformed collector tar must not cost a 45-minute build its only raw evidence.

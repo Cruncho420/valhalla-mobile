@@ -54,6 +54,9 @@ REQUEST_COUNT = 283
 CAPTURE_FILES = 2 * REQUEST_COUNT + 3
 MAX_RESPONSE = 1024 * 1024
 MAX_TOTAL = 128 * 1024 * 1024
+MAX_LIBRARY = 256 * 1024 * 1024
+LIBRARY_NAME = 'libvalhalla-wrapper.so'
+MAPS_LINE = re.compile(r'[0-9a-f]+-[0-9a-f]+ +[rwxsp-]{4} +[0-9a-f]+ +[0-9a-f:]+ +[0-9]+ +(/\S+)')
 
 
 class InvalidCapture(ValueError):
@@ -198,6 +201,37 @@ def admit_importer_requests(root):
     return rows
 
 
+def mapped_library_path(lines):
+    """Collapse a library's segment mappings to the one file they all name, or refuse."""
+    require(isinstance(lines, list) and 0 < len(lines) <= 32)
+    paths = []
+    for line in lines:
+        require(isinstance(line, str) and len(line) <= 512)
+        match = MAPS_LINE.fullmatch(line)
+        require(match is not None)
+        path = match.group(1)
+        # Several segments of one file collapse; a second distinct path is a second binary.
+        require(path.endswith('/' + LIBRARY_NAME))
+        if path not in paths:
+            paths.append(path)
+    require(len(paths) == 1)
+    return paths[0]
+
+
+def admit_native_library(receipt):
+    """Bind the executing ABI to the actually mapped library, not to an extraction directory."""
+    library = receipt.get('nativeLibrary')
+    require(isinstance(library, dict)
+            and set(library) == {'path', 'source', 'sha256', 'bytes', 'mappings'})
+    path = mapped_library_path(library['mappings'])
+    require(library['path'] == path)
+    require(library['source'] == ('apk-entry' if '!/' in path else 'file'))
+    require(path.endswith(f"/lib/{receipt['abi']}/{LIBRARY_NAME}"))
+    require(library['sha256'] == receipt['nativeLibrarySha256'])
+    require(isinstance(library['bytes'], int) and 0 < library['bytes'] <= MAX_LIBRARY)
+    return dict(path=path, source=library['source'], sha256=library['sha256'], bytes=library['bytes'])
+
+
 def payload_kinds(row):
     action = row.get('action', 'trace_attributes')
     require(action in {'trace_attributes', 'trace_route'})
@@ -321,6 +355,7 @@ def verify(stage_dir, output, platform):
     require(receipt['platform'] == platform)
     allowed = {'android': {'x86_64'}, 'ios': {'arm64-ios-simulator', 'x64-ios-simulator'}}
     require(receipt['abi'] in allowed[platform])
+    native_library = admit_native_library(receipt) if platform == 'android' else None
     config_bytes = read(output / 'config.json', 64 * 1024)
     require(receipt['configSha256'] == sha(config_bytes))
     expected_config = decode(read(stage_dir / 'config-template.json', 64 * 1024))
@@ -353,7 +388,7 @@ def verify(stage_dir, output, platform):
             require(actual['returned'] is True and 'failureClass' not in actual)
     require({p.name for p in files} == names)
     return dict(version=1, complete=True, requestCount=REQUEST_COUNT, refusedCount=refused,
-                platform=platform, abi=receipt['abi'],
+                platform=platform, abi=receipt['abi'], nativeLibrary=native_library,
                 stageSha256=sha(stage_bytes), receiptSha256=sha(read(output / 'receipt.json', 256*1024)),
                 matcherCorrectnessAdmitted=False, consumerPreservationAdmitted=False,
                 binaryProvenanceAdmitted=False)
