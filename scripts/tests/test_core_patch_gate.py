@@ -227,6 +227,27 @@ class PatchGateTests(unittest.TestCase):
         self.assertFalse((self.core / "src/meili/unlisted.cc").exists())
         self.assertEqual(git(self.core, "status", "--porcelain"), "")
 
+    def test_applied_series_deleting_a_listed_file_is_reversed(self):
+        # A hash-valid series that deletes a listed source must not crash the gate (hashing a missing
+        # file) before it can reverse: the deleted file comes back and the core is as it was found.
+        deletion = ("diff --git a/other.txt b/other.txt\ndeleted file mode 100644\n"
+                    "--- a/other.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-untouched\n")
+        patch = self.root / "patches/valhalla/0002-meili-bounded-topk.patch"
+        patch.write_text(patch.read_text() + deletion)
+        manifest = self.root / "patches/valhalla/manifest.cmake"
+        other = hashlib.sha256(b"untouched\n").hexdigest()
+        manifest.write_text(manifest.read_text().replace(
+            "a7700f3fc009b413a5afdcc9d7fae43670624816137429a36170d191e6e2a86d",
+            hashlib.sha256(patch.read_bytes()).hexdigest())
+            + f'list(APPEND core_sources "other.txt" "{other}" "{"1" * 64}")\n')
+        git(self.root, "commit", "-qam", "series deletes a listed file")
+        before = self.contents()
+        # (a deletion also shows as a file-mode change, which is the message the gate reports first)
+        self.rejected(self.gate(), "Valhalla patch gate: unexpected staged or file-mode changes")
+        self.assertEqual(before, self.contents())
+        self.assertEqual((self.core / "other.txt").read_text(), "untouched\n")
+        self.assertEqual(git(self.core, "status", "--porcelain"), "")
+
     def test_missing_initialized_core(self):
         (self.core / ".git").rename(self.core / "fixture-git-hidden")
         self.rejected(self.gate(), "initialized regular source")
