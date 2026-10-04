@@ -61,6 +61,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.arch }}
+          # Build authority includes hidden installed headers (Boost ships .gitkeep).
+          # Keep this opt-in confined to the three explicit build inputs below.
+          include-hidden-files: true
           path: |
             build/apple/${{ matrix.arch }}/libvalhalla_all.a
             build/apple/${{ matrix.arch }}/libvalhalla_all.a.provenance.json
