@@ -188,6 +188,23 @@ public:
     }
 }
 
+- (NSString*)traceAttributes:(NSString*)request token:(int64_t)token
+{
+    @synchronized(self) {
+        try {
+            const auto result = trace_attributes_cancellable([request UTF8String], _actor, token);
+            return [NSString stringWithUTF8String:result.c_str()];
+        } catch (...) {
+            return @"{\"code\":-1,\"message\":\"Trace response unavailable\"}";
+        }
+    }
+}
+
++ (void)cancelTrace:(int64_t)token
+{
+    cancel_trace(token);
+}
+
 - (void) dealloc
 {
     delete_valhalla_actor(_actor);

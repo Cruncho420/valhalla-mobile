@@ -38,6 +38,16 @@ JNIEXPORT jstring JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceAttr
                                                 jlong jActorHandle,
                                                 jstring jRequest);
 
+JNIEXPORT jstring JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceAttributesCancellable(JNIEnv *env,
+                                                jobject thiz,
+                                                jlong jActorHandle,
+                                                jstring jRequest,
+                                                jlong jToken);
+
+JNIEXPORT void JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeCancelTrace(JNIEnv *env,
+                                                jobject thiz,
+                                                jlong jToken);
+
 JNIEXPORT void JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeDestroyActor(JNIEnv *env,
                                                 jobject thiz,
                                                 jlong jActorHandle);
@@ -51,6 +61,10 @@ JNIEXPORT void JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeDestroyActor
 std::string route(const char *request, void* actor);
 std::string trace_route(const char *request, void* actor);
 std::string trace_attributes(const char *request, void* actor);
+// Cancellable trace_attributes (Rods r6): cancel_trace(token) from any thread ends the call at the
+// engine's next interrupt poll; it then answers {"code":-2,"message":"Trace cancelled"}.
+std::string trace_attributes_cancellable(const char *request, void* actor, int64_t token);
+void cancel_trace(int64_t token);
 void* create_valhalla_actor(const char *config_path, ValhallaMobileHttpClient* http_client = nullptr);
 void delete_valhalla_actor(void* actor);
 

@@ -341,6 +341,7 @@ jobs:
             -only-testing:ValhallaTests/TestTraceRoute \
             -only-testing:ValhallaTests/TestTraceEvidence \
             -only-testing:ValhallaTests/TestTraceDiscontinuityEvidence \
+            -only-testing:ValhallaTests/TestTraceCancel \
             -parallel-testing-enabled NO \
             -resultBundlePath build/test-evidence/ios/TraceTests.xcresult \
             -skipPackagePluginValidation \
@@ -363,6 +364,7 @@ jobs:
               "testSyntheticTraceEvidenceAndActorReuse()",
               "testBoundedOriginalChunksAndSyntheticGaps()",
               "testPrefixControlsAndActorReuse()",
+              "testCancelStopsOnlyItsOwnCallAndTheActorSurvives()",
           }
           for name in expected:
               matches = [n for n in flatten(result["testNodes"]) if n.get("name") == name]

@@ -13,15 +13,17 @@ import verify_native_test_results as checker
 
 
 # Deliberately independent of EXPECTED: the real connected-test report contains
-# these six methods. A missing production allowlist entry must make this fail.
+# these eight methods (six trace + two cancel, r6). A missing production allowlist entry must make this fail.
 SIX_METHOD_REPORT = """<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.valhalla.valhalla.ValhallaRawTraceRouteTest" tests="6" failures="0" errors="0" skipped="0">
+<testsuite name="com.valhalla.valhalla.ValhallaRawTraceRouteTest" tests="8" failures="0" errors="0" skipped="0">
   <testcase classname="com.valhalla.valhalla.ValhallaRawTraceRouteTest" name="indexContractBoundaries" time="0.1"/>
   <testcase classname="com.valhalla.valhalla.ValhallaRawTraceRouteTest" name="closeIsIdempotentAndRejectsBothActions" time="0.1"/>
   <testcase classname="com.valhalla.valhalla.ValhallaRawTraceRouteTest" name="traceUsesMapMatchingAndActorSurvivesErrors" time="0.1"/>
   <testcase classname="com.valhalla.valhalla.ValhallaTraceEvidenceTest" name="boundedPrefixesAlternativesAndDiscontinuities" time="0.1"/>
   <testcase classname="com.valhalla.valhalla.ValhallaTraceEvidenceTest" name="numericTokensAreNeverRoundedOrConfusedWithStrings" time="0.1"/>
   <testcase classname="com.valhalla.valhalla.ValhallaTraceEvidenceTest" name="originalSamplesErrorsAndSameActorRecovery" time="0.1"/>
+  <testcase classname="com.valhalla.valhalla.ValhallaTraceCancelTest" name="cancelStopsOnlyItsOwnCallAndTheActorSurvives" time="0.1"/>
+  <testcase classname="com.valhalla.valhalla.ValhallaTraceCancelTest" name="cancelNeedsNoActorAndTokensMustBePositive" time="0.1"/>
 </testsuite>"""
 
 
@@ -50,7 +52,7 @@ class NativeResultsTests(unittest.TestCase):
 
     def test_actual_shaped_six_method_report_is_required_in_full(self):
         self.write(SIX_METHOD_REPORT)
-        self.assertEqual(checker.verify_android(self.root), {'selectedPassed': 6, 'xmlFiles': 1})
+        self.assertEqual(checker.verify_android(self.root), {'selectedPassed': 8, 'xmlFiles': 1})
 
     def test_boundary_method_cannot_be_missing_skipped_or_renamed(self):
         line = next(line for line in SIX_METHOD_REPORT.splitlines() if 'name="indexContractBoundaries"' in line)
@@ -64,13 +66,13 @@ class NativeResultsTests(unittest.TestCase):
 
     def test_all_six_methods_pass_in_one_gradle_report(self):
         self.write(self.xml())
-        self.assertEqual(checker.verify_android(self.root), {'selectedPassed': 6, 'xmlFiles': 1})
+        self.assertEqual(checker.verify_android(self.root), {'selectedPassed': 8, 'xmlFiles': 1})
 
     def test_multiple_nested_gradle_reports_and_unrelated_failure(self):
         for index, case in enumerate(self.cases):
             self.write('<testsuites>' + self.xml([case]) + '</testsuites>', f'connected/device/{index}.xml')
         self.write('<testsuite><testcase classname="Other" name="other"><failure/></testcase></testsuite>', 'other.xml')
-        self.assertEqual(checker.verify_android(self.root)['selectedPassed'], 6)
+        self.assertEqual(checker.verify_android(self.root)['selectedPassed'], 8)
 
     def test_missing_method_rejected(self):
         self.write(self.xml(self.cases[:-1]))

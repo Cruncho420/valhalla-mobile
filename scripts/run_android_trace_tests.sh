@@ -11,7 +11,7 @@ test_status=0
     cd android
     ./gradlew :valhalla:connectedDebugAndroidTest --stacktrace \
       -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true \
-      -Pandroid.testInstrumentationRunnerArguments.class=com.valhalla.valhalla.ValhallaRawTraceRouteTest,com.valhalla.valhalla.ValhallaTraceEvidenceTest
+      -Pandroid.testInstrumentationRunnerArguments.class=com.valhalla.valhalla.ValhallaRawTraceRouteTest,com.valhalla.valhalla.ValhallaTraceEvidenceTest,com.valhalla.valhalla.ValhallaTraceCancelTest
 ) > "$evidence/gradle.log" 2>&1 || test_status=$?
 cat "$evidence/gradle.log"
 

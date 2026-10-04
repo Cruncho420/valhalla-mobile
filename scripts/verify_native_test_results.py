@@ -20,6 +20,8 @@ EXPECTED = {
     'com.valhalla.valhalla.ValhallaTraceEvidenceTest': frozenset({
         'originalSamplesErrorsAndSameActorRecovery', 'boundedPrefixesAlternativesAndDiscontinuities',
         'numericTokensAreNeverRoundedOrConfusedWithStrings'}),
+    'com.valhalla.valhalla.ValhallaTraceCancelTest': frozenset({
+        'cancelStopsOnlyItsOwnCallAndTheActorSurvives', 'cancelNeedsNoActorAndTokensMustBePositive'}),
 }
 MAX_FILES = 128
 MAX_FILE_BYTES = 1_048_576

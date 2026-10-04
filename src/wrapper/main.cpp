@@ -21,12 +21,18 @@ std::string trace_error_json(int code, const char* message) {
 
 using TraceOperation = std::string (ValhallaActor::*)(const std::string&);
 
-std::string trace_result(const char* request, void* actor, TraceOperation operation) {
+// A cancelled call (ValhallaActor::cancelTrace) answers this; the caller has already given up on it.
+constexpr int TRACE_CANCELLED_CODE = -2;
+
+template <typename Call>
+std::string trace_guarded(const char* request, void* actor, Call call) {
     try {
         if (!actor || !request) {
             return trace_error_json(-1, "Trace route requires a live actor and request");
         }
-        return (static_cast<ValhallaActor*>(actor)->*operation)(request);
+        return call(static_cast<ValhallaActor*>(actor));
+    } catch (const TraceCancelled&) {
+        return trace_error_json(TRACE_CANCELLED_CODE, "Trace cancelled");
     } catch (const valhalla::valhalla_exception_t& error) {
         return trace_error_json(error.code, error.message.c_str());
     } catch (const std::exception& error) {
@@ -34,6 +40,14 @@ std::string trace_result(const char* request, void* actor, TraceOperation operat
     } catch (...) {
         return trace_error_json(-1, "unknown exception");
     }
+}
+
+std::string trace_result(const char* request, void* actor, TraceOperation operation) {
+    return trace_guarded(request, actor, [&](ValhallaActor* a) { return (a->*operation)(request); });
+}
+
+std::string trace_result_cancellable(const char* request, void* actor, int64_t token) {
+    return trace_guarded(request, actor, [&](ValhallaActor* a) { return a->traceAttributes(request, token); });
 }
 } // namespace
 
@@ -153,7 +167,8 @@ Java_com_valhalla_valhalla_ValhallaRaw_nativeDestroyActor(JNIEnv *env,
     delete reinterpret_cast<ValhallaActor *>(jActorHandle);
 }
 // Both trace actions share JNI ownership and exception handling, without a route fallback.
-static jstring trace_request(JNIEnv* env, jlong handle, jstring input, TraceOperation operation) {
+template <typename Run>
+static jstring trace_request(JNIEnv* env, jstring input, Run run) {
     if (!input) {
         return env->NewStringUTF("{\"code\":-1,\"message\":\"Trace request is null\"}");
     }
@@ -161,7 +176,7 @@ static jstring trace_request(JNIEnv* env, jlong handle, jstring input, TraceOper
     if (!request) return nullptr; // Preserve the JVM's pending allocation exception.
     jstring response = nullptr;
     try {
-        const auto result = trace_result(request, reinterpret_cast<void*>(handle), operation);
+        const auto result = run(request);
         response = env->NewStringUTF(result.c_str());
     } catch (...) {
         // Includes an allocation failure while constructing error JSON.
@@ -172,12 +187,30 @@ static jstring trace_request(JNIEnv* env, jlong handle, jstring input, TraceOper
 }
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceRoute(JNIEnv* env, jobject, jlong handle, jstring input) {
-    return trace_request(env, handle, input, &ValhallaActor::traceRoute);
+    return trace_request(env, input, [&](const char* r) {
+        return trace_result(r, reinterpret_cast<void*>(handle), &ValhallaActor::traceRoute);
+    });
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceAttributes(JNIEnv* env, jobject, jlong handle, jstring input) {
-    return trace_request(env, handle, input, &ValhallaActor::traceAttributes);
+    return trace_request(env, input, [&](const char* r) {
+        return trace_result(r, reinterpret_cast<void*>(handle), &ValhallaActor::traceAttributes);
+    });
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceAttributesCancellable(JNIEnv* env, jobject, jlong handle,
+                                                                         jstring input, jlong token) {
+    return trace_request(env, input, [&](const char* r) {
+        return trace_result_cancellable(r, reinterpret_cast<void*>(handle), static_cast<int64_t>(token));
+    });
+}
+
+// Touches no actor: safe from any thread, during a call, and after close().
+extern "C" JNIEXPORT void JNICALL
+Java_com_valhalla_valhalla_ValhallaRaw_nativeCancelTrace(JNIEnv*, jobject, jlong token) {
+    ValhallaActor::cancelTrace(static_cast<int64_t>(token));
 }
 // --- end ValhallaRaw JNI surface ------------------------------------------------------------
 
@@ -188,6 +221,14 @@ std::string trace_route(const char* request, void* actor) {
 
 std::string trace_attributes(const char* request, void* actor) {
     return trace_result(request, actor, &ValhallaActor::traceAttributes);
+}
+
+std::string trace_attributes_cancellable(const char* request, void* actor, int64_t token) {
+    return trace_result_cancellable(request, actor, token);
+}
+
+void cancel_trace(int64_t token) {
+    ValhallaActor::cancelTrace(token);
 }
 
 void* create_valhalla_actor(const char *config_path, ValhallaMobileHttpClient* http_client) {

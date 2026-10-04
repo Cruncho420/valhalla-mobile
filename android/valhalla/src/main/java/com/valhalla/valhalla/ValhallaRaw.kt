@@ -94,6 +94,34 @@ class ValhallaRaw(private val configPath: String) : AutoCloseable {
   }
 
   /**
+   * [traceAttributes] that [cancelTrace] can stop (Rods r6): `cancelTrace(token)` from any thread
+   * ends it at the engine's next interrupt poll — at most one alternates-search round of further
+   * work — and it returns `{"code":-2,"message":"Trace cancelled"}`. [token] must be unique per call
+   * and > 0 (the caller owns the numbering), so a cancel can never stop a different call.
+   */
+  @Synchronized
+  fun traceAttributes(request: String, token: Long): String {
+    require(token > 0) { "token must be > 0" }
+    if (closed) throw IllegalStateException("closed")
+    if (actorHandle == 0L) {
+      actorHandle = nativeCreateActor(configPath)
+    }
+    if (actorHandle == 0L) {
+      return "{\"code\":-1,\"message\":\"Unable to create trace attributes actor\"}"
+    }
+    return nativeTraceAttributesCancellable(actorHandle, request, token)
+  }
+
+  /**
+   * Cancel the cancellable [traceAttributes] call carrying [token] — running now, or later. NOT
+   * synchronized (it must not wait for the call it stops) and touches no native actor, so it is
+   * safe during a call and after [close].
+   */
+  fun cancelTrace(token: Long) {
+    nativeCancelTrace(token)
+  }
+
+  /**
    * Destroy the native actor deterministically. Idempotent — second and later calls are no-ops.
    * After close, [route] throws [IllegalStateException].
    */
@@ -118,6 +146,12 @@ class ValhallaRaw(private val configPath: String) : AutoCloseable {
 
   /** Returns raw trace_attributes response/error JSON. */
   private external fun nativeTraceAttributes(actorHandle: Long, request: String): String
+
+  /** Cancellable trace_attributes: response/error JSON, `{"code":-2,…}` when cancelled. */
+  private external fun nativeTraceAttributesCancellable(actorHandle: Long, request: String, token: Long): String
+
+  /** Marks [token] cancelled process-wide; touches no actor. */
+  private external fun nativeCancelTrace(token: Long)
 
   /** Deletes the native ValhallaActor behind [actorHandle]. At most once per handle. */
   private external fun nativeDestroyActor(actorHandle: Long)

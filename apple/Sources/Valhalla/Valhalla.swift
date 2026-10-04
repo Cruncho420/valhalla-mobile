@@ -70,4 +70,16 @@ public final class Valhalla: ValhallaProviding {
     public func route(rawRequest request: String) -> String {
         actor!.route(request)
     }
+
+    /// traceAttributes that `Valhalla.cancelTrace(token)` can stop at the engine's next interrupt
+    /// poll (at most one alternates-search round later); a cancelled call answers {"code":-2,...}.
+    /// `token` > 0 and unique per call.
+    public func traceAttributes(rawRequest request: String, token: Int64) -> String {
+        actor!.traceAttributes(request, token: token)
+    }
+
+    /// Cancel the cancellable call carrying `token`, now or when it starts. Takes no lock.
+    public static func cancelTrace(_ token: Int64) {
+        ValhallaWrapper.cancelTrace(token)
+    }
 }
