@@ -1,6 +1,7 @@
 """Exercise the actual CMake gate with isolated real Git repositories, never the live submodule.
 Only the expected core commit is rebound to each synthetic fixture's real commit.
-The original source, patch, both file hashes, Git commands, and CMake helper remain genuine.
+The original sources (scripts/tests/fixtures/core mirrors the pinned core paths), the real patch
+series, every manifest hash, Git commands, and the CMake helper remain genuine.
 """
 from pathlib import Path
 import concurrent.futures
@@ -15,6 +16,16 @@ ROOT = Path(__file__).resolve().parents[2]
 CORE_PIN = "e2f017b16080f49203de245a211b09efab09cf72"
 GIT = shutil.which("git")
 CMAKE = shutil.which("cmake")
+FIXTURES = ROOT / "scripts/tests/fixtures/core"
+PATCHED = {
+    "src/exceptions.cc": "6e8b7c977ab131511b596f54793ac9444cd94e09ef4ed8ea09e9c2c22eb640e3",
+    "src/meili/config.cc": "2edece25d9161c4b7c5d096d6632a7859084a172da0849df23735f4eb5299f0d",
+    "src/meili/map_matcher.cc": "99407a309247b2855dcba3a2894579946112dc8297613303468596446a73ac87",
+    "src/meili/match_route.cc": "8f8db9a3c5725c4c5239d6f2a3d8ec5846d4847b08c2f755fdbc5a0d65dcd858",
+    "src/thor/trace_attributes_action.cc":
+        "49e8442b3d8c457a102f88379870e2202818f0e8eec7f077d8b4daaba45292f0",
+    "valhalla/meili/config.h": "19b3c999f0283b6f17a58d0d50acf6690a1819528e4fae4a41ca5869a66f9d29",
+}
 
 
 def run(*args, cwd=None, env=None):
@@ -35,10 +46,9 @@ class PatchGateTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.core = self.root / "src/valhalla"
         self.target = self.core / "src/meili/match_route.cc"
-        self.target.parent.mkdir(parents=True)
+        shutil.copytree(FIXTURES, self.core)
         shutil.copytree(ROOT / "cmake", self.root / "cmake")
         shutil.copytree(ROOT / "patches/valhalla", self.root / "patches/valhalla")
-        shutil.copyfile(ROOT / "scripts/tests/fixtures/match_route.cc", self.target)
         (self.core / "other.txt").write_text("untouched\n")
         for repo in (self.root, self.core):
             git(repo, "init", "--quiet")
@@ -58,10 +68,16 @@ class PatchGateTests(unittest.TestCase):
             args += ["-DGIT_EXECUTABLE=" + str(git_executable)]
         return run(*args, "-P", str(self.root / "cmake/PrepareValhalla.cmake"))
 
+    def hashes(self):
+        return {path: hashlib.sha256((self.core / path).read_bytes()).hexdigest()
+                for path in PATCHED}
+
+    def contents(self):
+        return {path: (self.core / path).read_bytes() for path in PATCHED}
+
     def success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(hashlib.sha256(self.target.read_bytes()).hexdigest(),
-                         "8f8db9a3c5725c4c5239d6f2a3d8ec5846d4847b08c2f755fdbc5a0d65dcd858")
+        self.assertEqual(self.hashes(), PATCHED)
 
     def rejected(self, result, expected):
         self.assertNotEqual(result.returncode, 0)
@@ -85,9 +101,40 @@ class PatchGateTests(unittest.TestCase):
         self.rejected(self.gate(), "core HEAD or parent gitlink")
 
     def test_patch_tamper(self):
-        patch = self.root / "patches/valhalla/0001-meili-stateful-terminal-segment.patch"
-        patch.write_text(patch.read_text() + "\n")
-        self.rejected(self.gate(), "patch checksum mismatch")
+        for name in ("0001-meili-stateful-terminal-segment.patch", "0002-meili-bounded-topk.patch"):
+            with self.subTest(patch=name):
+                patch = self.root / "patches/valhalla" / name
+                original = patch.read_bytes()
+                patch.write_bytes(original + b"\n")
+                before = self.contents()
+                self.rejected(self.gate(), "patch checksum mismatch")
+                self.assertEqual(before, self.contents())
+                patch.write_bytes(original)
+
+    def test_partially_patched_tree_is_not_rewritten(self):
+        self.success(self.gate())
+        patched = self.contents()
+        git(self.core, "checkout", "--", ".")
+        for path in ("src/meili/match_route.cc", "src/meili/map_matcher.cc"):
+            with self.subTest(only_patched=path):
+                (self.core / path).write_bytes(patched[path])
+                before = self.contents()
+                self.rejected(self.gate(), "core source checksum mismatch")
+                self.assertEqual(before, self.contents())
+                git(self.core, "checkout", "--", ".")
+        for path in patched:
+            (self.core / path).write_bytes(patched[path])
+        git(self.core, "checkout", "--", "src/meili/map_matcher.cc")
+        before = self.contents()
+        self.rejected(self.gate(), "core source checksum mismatch")
+        self.assertEqual(before, self.contents())
+
+    def test_change_to_unlisted_core_file(self):
+        self.success(self.gate())
+        (self.core / "other.txt").write_text("changed outside the series\n")
+        before = self.contents()
+        self.rejected(self.gate(), "unexpected tracked core changes")
+        self.assertEqual(before, self.contents())
 
     def test_unexpected_target(self):
         self.target.write_text(self.target.read_text() + "\n")
@@ -121,9 +168,35 @@ class PatchGateTests(unittest.TestCase):
                                  f'if $apply && {{ [ "{phase}" = "check" ] || ! $check; }}; then exit 43; fi\n'
                                  f'exec "{GIT}" "$@"\n')
                 proxy.chmod(0o755)
-                before = self.target.read_bytes()
+                before = self.contents()
                 self.rejected(self.gate(proxy), "Git verification failed")
-                self.assertEqual(before, self.target.read_bytes())
+                self.assertEqual(before, self.contents())
+
+    def test_series_apply_failure_does_not_mutate(self):
+        # 0001 applies cleanly, 0002 cannot: the single series invocation must change nothing.
+        config = self.core / "src/meili/config.cc"
+        config.write_text(config.read_text().replace("routing.Read(params);", "routing.Read(p);"))
+        git(self.core, "commit", "-qam", "drift under 0002")
+        self.pin = git(self.core, "rev-parse", "HEAD")
+        manifest = self.root / "patches/valhalla/manifest.cmake"
+        original = hashlib.sha256(config.read_bytes()).hexdigest()
+        text = manifest.read_text()
+        start = text.index('set(expected_core "') + 19
+        text = text[:start] + self.pin + text[start + 40:]
+        text = text.replace("6e35c4a6de63ec0d577332a563850a4d735eed4a712f7deaf5e60681fc1a826b", original)
+        manifest.write_text(text)
+        git(self.root, "add", ".")
+        git(self.root, "commit", "-qm", "repin")
+        skip_check = self.root / "git-skip-check"
+        skip_check.write_text('#!/bin/bash\nfor arg in "$@"; do [ "$arg" != "--check" ] || exit 0; done\n'
+                              f'exec "{GIT}" "$@"\n')
+        skip_check.chmod(0o755)
+        for proxy in (None, skip_check):
+            with self.subTest(check_skipped=proxy is not None):
+                before = self.contents()
+                self.rejected(self.gate(proxy), "Git verification failed")
+                self.assertEqual(before, self.contents())
+                self.assertEqual(git(self.core, "status", "--porcelain"), "")
 
     def test_missing_initialized_core(self):
         (self.core / ".git").rename(self.core / "fixture-git-hidden")

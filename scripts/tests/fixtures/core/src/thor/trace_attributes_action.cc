@@ -1,0 +1,98 @@
+#include "meili/match_result.h"
+#include "midgard/logging.h"
+#include "thor/worker.h"
+#include "tyr/serializers.h"
+
+#include <string>
+#include <tuple>
+#include <vector>
+
+using namespace valhalla;
+using namespace valhalla::midgard;
+using namespace valhalla::baldr;
+using namespace valhalla::thor;
+
+namespace valhalla {
+namespace thor {
+/*
+ * The trace_attributes action takes a GPS trace or latitude, longitude positions
+ * from a portion of an existing route and returns detailed attribution along the
+ * portion of the route. This includes details for each section of road along the
+ * path as well as any intersections along the path.
+ */
+std::string thor_worker_t::trace_attributes(Api& request) {
+  // time this whole method and save that statistic
+  auto _ = measure_scope_time(request);
+
+  // Parse request
+  adjust_scores(*request.mutable_options());
+  parse_costing(request);
+  parse_measurements(request);
+  const auto& options = request.options();
+  controller = AttributesController(options, true);
+
+  /*
+   * A flag indicating whether the input shape is a GPS trace or exact points from a
+   * prior route run against the Valhalla road network.  Knowing that the input is from
+   * Valhalla will allow an efficient “edge-walking” algorithm rather than a more extensive
+   * map-matching method. If true, this enforces to only use exact route match algorithm.
+   */
+
+  std::vector<std::tuple<float, float, std::vector<meili::MatchResult>>> map_match_results;
+
+  switch (options.shape_match()) {
+    // If the exact points from a prior route that was run against the Valhalla road network,
+    // then we can traverse the exact shape to form a path by using edge-walking algorithm
+    case ShapeMatch::edge_walk:
+      try {
+        route_match(request);
+        map_match_results.emplace_back(1.0f, 0.0f, std::vector<meili::MatchResult>{});
+      } catch (const std::exception& e) {
+        throw valhalla_exception_t{
+            443, ShapeMatch_Enum_Name(options.shape_match()) +
+                     " algorithm failed to find exact route match.  Try using "
+                     "shape_match:'walk_or_snap' to fallback to map-matching algorithm"};
+      }
+      break;
+    // If non-exact shape points are used, then we need to correct this shape by sending them
+    // through the map-matching algorithm to snap the points to the correct shape
+    case ShapeMatch::map_snap:
+      try {
+        map_match_results = map_match(request);
+      } catch (const std::exception& e) {
+        throw valhalla_exception_t{
+            444, ShapeMatch_Enum_Name(options.shape_match()) +
+                     " algorithm failed to snap the shape points to the correct shape."};
+      }
+      break;
+    // If we think that we have the exact shape but there ends up being no Valhalla route match,
+    // then we want to fallback to try and use meili map matching to match to local route
+    // network. No shortcuts are used and detailed information at every intersection becomes
+    // available.
+    case ShapeMatch::walk_or_snap:
+      try {
+        route_match(request);
+        map_match_results.emplace_back(1.0f, 0.0f, std::vector<meili::MatchResult>{});
+      } catch (...) {
+        LOG_WARN(ShapeMatch_Enum_Name(options.shape_match()) +
+                 " algorithm failed to find exact route match; Falling back to map_match...");
+        try {
+          map_match_results = map_match(request);
+        } catch (const std::exception& e) {
+          throw valhalla_exception_t{
+              444, ShapeMatch_Enum_Name(options.shape_match()) +
+                       " algorithm failed to snap the shape points to the correct shape."};
+        }
+      }
+      break;
+    // Handle protobuf sentinel values to avoid compiler warnings
+    case ShapeMatch_INT_MIN_SENTINEL_DO_NOT_USE_:
+    case ShapeMatch_INT_MAX_SENTINEL_DO_NOT_USE_:
+      throw valhalla_exception_t{400, "Invalid shape_match value"};
+  }
+
+  return tyr::serializeTraceAttributes(request, controller, map_match_results);
+}
+
+} // namespace thor
+} // namespace valhalla

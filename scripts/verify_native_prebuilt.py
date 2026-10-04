@@ -26,8 +26,7 @@ def expected_prebuilt_source(repo, manifest_path, expected_revision=None):
     if link != f"160000 commit {core_pin}\t{provenance.CORE_PATH}" or \
             index != f"160000 {core_pin} 0\t{provenance.CORE_PATH}":
         raise provenance.ProvenanceError("Core gitlink differs from trusted manifest")
-    if provenance.file_hash(repo / provenance.PATCH_PATH) != pins["patch_sha"]:
-        raise provenance.ProvenanceError("Patch bytes differ from trusted manifest")
+    provenance.verify_patch_bytes(repo, pins)
     core = repo / provenance.CORE_PATH
     if core.is_symlink():
         raise provenance.ProvenanceError("Core checkout must not be a symlink")

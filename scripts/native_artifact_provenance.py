@@ -10,7 +10,7 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import selectors
 import stat
@@ -23,9 +23,8 @@ import time
 MAX_JSON = 65536
 MAX_COMMAND = 8 * 1024 * 1024
 COMMAND_SECONDS = 60
-PATCH_PATH = "patches/valhalla/0001-meili-stateful-terminal-segment.patch"
+PATCH_DIR = "patches/valhalla"
 CORE_PATH = "src/valhalla"
-TARGET_PATH = "src/meili/match_route.cc"
 ELF_ABIS = {"arm64-v8a": (2, 183), "armeabi-v7a": (1, 40),
             "x86": (1, 3), "x86_64": (2, 62)}
 APPLE_ABIS = {"arm64-ios": ("arm64", 2), "arm64-ios-simulator": ("arm64", 7),
@@ -150,28 +149,68 @@ def hex_value(value, length):
     return value
 
 
+def relative_path(value):
+    path = PurePosixPath(value)
+    if not re.fullmatch(r"[A-Za-z0-9._/+-]+", value) or path.is_absolute() or \
+            path.as_posix() != value or any(part in ("", ".", "..") for part in path.parts):
+        raise ProvenanceError("Invalid patch manifest path")
+    return value
+
+
 def manifest(path):
+    """Parse the reviewed series: expected_core, ordered patches, and changed core sources."""
     data = read_bounded(path, 4096)
-    values = {}
+    core, patches, sources = None, [], []
     for line in data.decode("ascii").splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        match = re.fullmatch(r'set\((expected_core|original_sha|patched_sha|patch_sha) "([0-9a-f]+)"\)', line)
-        if not match or match[1] in values:
+        if match := re.fullmatch(r'set\(expected_core "([0-9a-f]{40})"\)', line):
+            if core is not None:
+                raise ProvenanceError("Invalid or duplicate patch manifest entry")
+            core = match[1]
+        elif match := re.fullmatch(r'list\(APPEND core_patches "([^"]+)" "([0-9a-f]{64})"\)', line):
+            if "/" in match[1] or not match[1].endswith(".patch"):
+                raise ProvenanceError("Invalid patch manifest path")
+            patches.append((relative_path(match[1]), match[2]))
+        elif match := re.fullmatch(
+                r'list\(APPEND core_sources "([^"]+)" "([0-9a-f]{64})" "([0-9a-f]{64})"\)', line):
+            sources.append((relative_path(match[1]), match[2], match[3]))
+        else:
             raise ProvenanceError("Invalid or duplicate patch manifest entry")
-        values[match[1]] = hex_value(match[2], 40 if match[1] == "expected_core" else 64)
-    if set(values) != {"expected_core", "original_sha", "patched_sha", "patch_sha"}:
+    if core is None or not patches or not sources:
         raise ProvenanceError("Incomplete patch manifest")
-    return values
+    if len({name for name, _ in patches}) != len(patches) or \
+            len({name for name, _, _ in sources}) != len(sources):
+        raise ProvenanceError("Invalid or duplicate patch manifest entry")
+    return {"expected_core": core, "patches": patches, "sources": sources}
 
 
-def expected_source(revision, pins, dirty=None):
-    result = {"wrapperRevision": hex_value(revision, 40), "coreRevision": pins["expected_core"],
-              "patchSha256": pins["patch_sha"], "patchedSourceSha256": pins["patched_sha"],
-              "originalSourceSha256": pins["original_sha"], "dirtySha256": dirty,
+def line_digest(lines):
+    return hashlib.sha256("".join(line + "\n" for line in lines).encode()).hexdigest()
+
+
+def _source(revision, core, patch, patched, original, dirty):
+    result = {"wrapperRevision": hex_value(revision, 40), "coreRevision": core,
+              "patchSha256": patch, "patchedSourceSha256": patched,
+              "originalSourceSha256": original, "dirtySha256": dirty,
               "clean": dirty is None}
     result["buildSourceIdentity"] = digest(result)
     return result
+
+
+def expected_source(revision, pins, dirty=None):
+    # Series digests are defined in patches/valhalla/README.md; keep both in step.
+    return _source(revision, pins["expected_core"],
+                   line_digest(sha for _, sha in pins["patches"]),
+                   line_digest(f"{path} {patched}" for path, _, patched in pins["sources"]),
+                   line_digest(f"{path} {original}" for path, original, _ in pins["sources"]),
+                   dirty)
+
+
+def verify_patch_bytes(repo, pins):
+    for name, sha in pins["patches"]:
+        if file_hash(Path(repo) / PATCH_DIR / name) != sha:
+            raise ProvenanceError("Patch bytes do not match trusted manifest")
 
 
 def dirty_entries(repo, exempt, prefix="", depth=0):
@@ -200,7 +239,7 @@ def dirty_entries(repo, exempt, prefix="", depth=0):
         if name in links:
             continue
         path = Path(repo) / name
-        if path == exempt:
+        if path in exempt:
             continue  # The required patched contents are independently verified below.
         mode = path.lstat().st_mode if path.exists() or path.is_symlink() else None
         entries.append({"path": prefix + name, "mode": mode,
@@ -214,14 +253,14 @@ def dirty_entries(repo, exempt, prefix="", depth=0):
     return entries
 
 
-def core_stage_and_mode(core, target):
+def core_stage_and_mode(core, paths):
     entries = []
-    tracked = git(core, "ls-tree", "HEAD", TARGET_PATH).split()
-    if not tracked or tracked[0] not in (b"100644", b"100755"):
-        raise ProvenanceError("Patched target must be a tracked regular core source file")
-    mode = tracked[0]
-    if bool(target.stat().st_mode & 0o111) != (mode == b"100755"):
-        entries.append({"path": CORE_PATH + "/" + TARGET_PATH, "executableModeChanged": True})
+    for path in paths:
+        tracked = git(core, "ls-tree", "HEAD", path).split()
+        if not tracked or tracked[0] not in (b"100644", b"100755"):
+            raise ProvenanceError("Patched target must be a tracked regular core source file")
+        if bool((core / path).stat().st_mode & 0o111) != (tracked[0] == b"100755"):
+            entries.append({"path": CORE_PATH + "/" + path, "executableModeChanged": True})
     return entries
 
 
@@ -234,12 +273,12 @@ def snapshot(repo, manifest_path, require_clean=False):
         raise ProvenanceError("Core checkout is missing")
     if git(core, "rev-parse", "HEAD").decode().strip() != pins["expected_core"]:
         raise ProvenanceError("Core revision does not match trusted manifest")
-    if file_hash(repo / PATCH_PATH) != pins["patch_sha"]:
-        raise ProvenanceError("Patch bytes do not match trusted manifest")
-    target = core / TARGET_PATH
-    if file_hash(target) != pins["patched_sha"]:
-        raise ProvenanceError("Core source is not the required patched source")
-    entries = dirty_entries(repo, target) + core_stage_and_mode(core, target)
+    verify_patch_bytes(repo, pins)
+    paths = [path for path, _, _ in pins["sources"]]
+    for path, _, patched in pins["sources"]:
+        if file_hash(core / path) != patched:
+            raise ProvenanceError("Core source is not the required patched source")
+    entries = dirty_entries(repo, {core / path for path in paths}) + core_stage_and_mode(core, paths)
     source = expected_source(revision, pins, digest(entries) if entries else None)
     if require_clean and not source["clean"]:
         raise ProvenanceError("Clean source required; local changes are present")
@@ -267,15 +306,14 @@ def source_from(document):
     source = document.get("source")
     if not isinstance(source, dict):
         raise ProvenanceError("Missing source identity")
-    pins = {"expected_core": hex_value(source.get("coreRevision"), 40),
-            "patch_sha": hex_value(source.get("patchSha256"), 64),
-            "patched_sha": hex_value(source.get("patchedSourceSha256"), 64),
-            "original_sha": hex_value(source.get("originalSourceSha256"), 64)}
+    identity = [hex_value(source.get("coreRevision"), 40)] + [
+        hex_value(source.get(key), 64)
+        for key in ("patchSha256", "patchedSourceSha256", "originalSourceSha256")]
     dirty = source.get("dirtySha256")
     if dirty is not None:
         hex_value(dirty, 64)
-    if type(source.get("clean")) is not bool or source != expected_source(
-            source.get("wrapperRevision"), pins, dirty):
+    if type(source.get("clean")) is not bool or source != _source(
+            source.get("wrapperRevision"), *identity, dirty):
         raise ProvenanceError("Inconsistent source identity")
     return source
 

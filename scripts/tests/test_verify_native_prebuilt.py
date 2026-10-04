@@ -36,21 +36,22 @@ class PrebuiltTests(unittest.TestCase):
         self.core = self.repo / P.CORE_PATH
         self.init(self.repo)
         self.init(self.core)
-        self.target = self.core / P.TARGET_PATH
+        self.target = self.core / "src/meili/match_route.cc"
         self.target.parent.mkdir(parents=True)
         self.target.write_text("original\n")
         original = P.file_hash(self.target)
         self.git(self.core, "add", ".")
         self.git(self.core, "commit", "-qm", "core")
         core_revision = self.git(self.core, "rev-parse", "HEAD").decode().strip()
-        patch = self.repo / P.PATCH_PATH
+        patch = self.repo / "patches/valhalla/0001-fixture.patch"
         patch.parent.mkdir(parents=True)
         patch.write_text("fixture patch\n")
         self.manifest = patch.parent / "manifest.cmake"
-        self.manifest.write_text("\n".join(f'set({k} "{v}")' for k, v in {
-            "expected_core": core_revision, "original_sha": original,
-            "patched_sha": P.hashlib.sha256(b"patched\n").hexdigest(),
-            "patch_sha": P.file_hash(patch)}.items()) + "\n")
+        patched = P.hashlib.sha256(b"patched\n").hexdigest()
+        self.manifest.write_text(
+            f'set(expected_core "{core_revision}")\n'
+            f'list(APPEND core_patches "{patch.name}" "{P.file_hash(patch)}")\n'
+            f'list(APPEND core_sources "src/meili/match_route.cc" "{original}" "{patched}")\n')
         (self.repo / ".gitignore").write_text("*.so\n*.so.provenance.json\n/build/\n")
         (self.repo / "tracked.txt").write_text("clean\n")
         self.git(self.repo, "add", ".")

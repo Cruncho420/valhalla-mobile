@@ -22,6 +22,17 @@ SPEC = importlib.util.spec_from_file_location(
 P = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(P)
 
+TARGET = "src/meili/match_route.cc"
+SECOND = "valhalla/meili/config.h"
+PATCH = "patches/valhalla/0001-first.patch"
+SECOND_PATCH = "patches/valhalla/0002-second.patch"
+
+
+def manifest_text(core, patches, sources):
+    return "\n".join(['set(expected_core "%s")' % core] + [
+        'list(APPEND core_patches "%s" "%s")' % item for item in patches] + [
+        'list(APPEND core_sources "%s" "%s" "%s")' % item for item in sources]) + "\n"
+
 
 class ProvenanceTests(unittest.TestCase):
     def git(self, root, *args):
@@ -41,25 +52,32 @@ class ProvenanceTests(unittest.TestCase):
         self.core = self.repo / P.CORE_PATH
         self.init(self.repo)
         self.init(self.core)
-        target = self.core / P.TARGET_PATH
+        target = self.core / TARGET
         target.parent.mkdir(parents=True)
         target.write_text("original\n")
+        second = self.core / SECOND
+        second.parent.mkdir(parents=True)
+        second.write_text("second original\n")
         original = P.file_hash(target)
         self.git(self.core, "add", ".")
         self.git(self.core, "commit", "-qm", "Core fixture")
         core_revision = self.git(self.core, "rev-parse", "HEAD").decode().strip()
-        patch = self.repo / P.PATCH_PATH
+        patch = self.repo / PATCH
         patch.parent.mkdir(parents=True)
         patch.write_text("test patch bytes\n")
+        (self.repo / SECOND_PATCH).write_text("second patch bytes\n")
         self.manifest = patch.parent / "manifest.cmake"
-        patched = P.hashlib.sha256(b"patched\n").hexdigest()
-        self.manifest.write_text("\n".join('set(%s "%s")' % item for item in [
-            ("expected_core", core_revision), ("original_sha", original),
-            ("patched_sha", patched), ("patch_sha", P.file_hash(patch))]) + "\n")
+        sha = lambda text: P.hashlib.sha256(text).hexdigest()
+        self.manifest.write_text(manifest_text(core_revision, [
+            (Path(PATCH).name, P.file_hash(patch)),
+            (Path(SECOND_PATCH).name, P.file_hash(self.repo / SECOND_PATCH))], [
+            (TARGET, original, sha(b"patched\n")),
+            (SECOND, P.file_hash(second), sha(b"second patched\n"))]))
         (self.repo / "tracked.txt").write_text("clean\n")
         self.git(self.repo, "add", ".")
         self.git(self.repo, "commit", "-qm", "Wrapper fixture")
         target.write_text("patched\n")
+        second.write_text("second patched\n")
         self.source = self.root / "source.json"
         P.atomic_write(self.source, P.snapshot(self.repo, self.manifest, True))
         self.binary = self.root / "libvalhalla-wrapper.so"
@@ -120,13 +138,18 @@ class ProvenanceTests(unittest.TestCase):
         self.assertFalse(self.receipt.exists())
 
     def test_changed_core_or_patch_is_rejected(self):
-        (self.core / P.TARGET_PATH).write_text("wrong patch\n")
-        with self.assertRaises(P.ProvenanceError):
-            P.snapshot(self.repo, self.manifest)
-        (self.core / P.TARGET_PATH).write_text("patched\n")
-        (self.repo / P.PATCH_PATH).write_text("wrong patch artifact\n")
-        with self.assertRaises(P.ProvenanceError):
-            P.snapshot(self.repo, self.manifest)
+        for path, good in ((TARGET, "patched\n"), (SECOND, "second patched\n")):
+            (self.core / path).write_text("wrong patch\n")
+            with self.assertRaises(P.ProvenanceError):
+                P.snapshot(self.repo, self.manifest)
+            (self.core / path).write_text(good)
+        for path in (PATCH, SECOND_PATCH):
+            good = (self.repo / path).read_bytes()
+            (self.repo / path).write_text("wrong patch artifact\n")
+            with self.assertRaises(P.ProvenanceError):
+                P.snapshot(self.repo, self.manifest)
+            (self.repo / path).write_bytes(good)
+        self.assertTrue(P.snapshot(self.repo, self.manifest, True)["source"]["clean"])
 
     def test_prebuilt_without_receipt_is_not_attested(self):
         os.utime(self.binary, ns=(1, 1))
@@ -155,10 +178,48 @@ class ProvenanceTests(unittest.TestCase):
     def test_wrong_patch_expectation_cannot_trust_receipt_itself(self):
         receipt = P.emit(self.args)
         pins = P.manifest(self.manifest)
-        pins["patch_sha"] = "0" * 64
+        pins["patches"][1] = (pins["patches"][1][0], "0" * 64)
         expected = P.expected_source(receipt["source"]["wrapperRevision"], pins)
         with self.assertRaises(P.ProvenanceError):
             self.verify(receipt, expected)
+
+    def test_shipped_manifest_series_identity(self):
+        shipped = P.manifest(Path(__file__).resolve().parents[2] / "patches/valhalla/manifest.cmake")
+        self.assertEqual([name for name, _ in shipped["patches"]], [
+            "0001-meili-stateful-terminal-segment.patch", "0002-meili-bounded-topk.patch"])
+        self.assertEqual(len(shipped["sources"]), 6)
+        source = P.expected_source("0" * 40, shipped)
+        self.assertEqual(source["patchSha256"],
+                         "2deca156edb5a0e20f6894d5724eebe26b74b912ddd876d8faa12b643c68f5a1")
+        self.assertEqual(source["originalSourceSha256"], P.hashlib.sha256("".join(
+            f"{path} {original}\n" for path, original, _ in shipped["sources"]).encode()).hexdigest())
+        self.assertEqual(source["patchedSourceSha256"], P.hashlib.sha256("".join(
+            f"{path} {patched}\n" for path, _, patched in shipped["sources"]).encode()).hexdigest())
+
+    def test_manifest_parsing_is_strict(self):
+        good = self.manifest.read_text()
+        lines = good.splitlines()
+        source_line = lines[-1]
+        cases = {
+            "unknown line": good + 'set(original_sha "' + "0" * 64 + '")\n',
+            "duplicate core": good + lines[0] + "\n",
+            "duplicate patch": good + lines[1] + "\n",
+            "duplicate source": good + source_line + "\n",
+            "no patches": "\n".join(l for l in lines if "core_patches" not in l) + "\n",
+            "no sources": "\n".join(l for l in lines if "core_sources" not in l) + "\n",
+            "upper hex": good.replace(lines[1][-66:], lines[1][-66:].upper()),
+            "short hex": good.replace(lines[1], lines[1][:-3] + '")'),
+            "dotdot path": good.replace('"' + SECOND + '"', '"src/../valhalla/meili/config.h"'),
+            "absolute path": good.replace('"' + SECOND + '"', '"/valhalla/meili/config.h"'),
+            "patch outside dir": good.replace('"0002-second.patch"', '"../0002-second.patch"'),
+        }
+        for name, text in cases.items():
+            with self.subTest(case=name):
+                self.assertNotEqual(text, good)
+                self.manifest.write_text(text)
+                with self.assertRaises(P.ProvenanceError):
+                    P.manifest(self.manifest)
+        self.manifest.write_text(good)
 
     def test_wrong_abi_in_bytes_and_in_metadata_fail(self):
         receipt = P.emit(self.args)
@@ -229,15 +290,18 @@ class ProvenanceTests(unittest.TestCase):
         with self.assertRaises(P.ProvenanceError):
             P.snapshot(self.repo, self.manifest, True)
         extra.rename(self.root / "owned-extra.cc")
-        self.git(self.core, "add", P.TARGET_PATH)
+        self.git(self.core, "add", SECOND)
         self.assertFalse(P.snapshot(self.repo, self.manifest)["source"]["clean"])
         with self.assertRaises(P.ProvenanceError):
             P.snapshot(self.repo, self.manifest, True)
 
     def test_exempt_patched_target_mode_is_still_source_identity(self):
-        target = self.core / P.TARGET_PATH
-        target.chmod(0o755)
-        self.assertFalse(P.snapshot(self.repo, self.manifest)["source"]["clean"])
+        for path in (TARGET, SECOND):
+            target = self.core / path
+            target.chmod(0o755)
+            self.assertFalse(P.snapshot(self.repo, self.manifest)["source"]["clean"])
+            target.chmod(0o644)
+        self.assertTrue(P.snapshot(self.repo, self.manifest)["source"]["clean"])
 
     def test_malformed_source_boolean_and_receipt_shapes(self):
         receipt = P.emit(self.args)

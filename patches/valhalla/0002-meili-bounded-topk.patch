@@ -9,6 +9,7 @@ Rods downstream patch 0002 (FEAT-090, engine release rods-0.5.1-k21-r5). Applies
 A request asking for no alternates runs exactly one round and is unaffected by all three.
 
 diff --git a/src/exceptions.cc b/src/exceptions.cc
+diff --git a/src/exceptions.cc b/src/exceptions.cc
 index d56102c..b6e0c36 100644
 --- a/src/exceptions.cc
 +++ b/src/exceptions.cc
@@ -46,7 +47,7 @@ index bbb5c21..86e7754 100644
    ReadParamOptional(interpolation_distance_meters, params, "default.interpolation_distance");
    CHECK_THROWS(interpolation_distance_meters > 0.f,
 diff --git a/src/meili/map_matcher.cc b/src/meili/map_matcher.cc
-index 99a1ae9..677c1a5 100644
+index 99a1ae9..645f049 100644
 --- a/src/meili/map_matcher.cc
 +++ b/src/meili/map_matcher.cc
 @@ -719,7 +719,17 @@ std::vector<MatchResults> MapMatcher::OfflineMatch(const std::vector<Measurement
@@ -67,14 +68,18 @@ index 99a1ae9..677c1a5 100644
      // Get the states for the kth best path in reversed order then fix the order
      state_ids.clear();
      double accumulated_cost = 0.f;
-@@ -752,6 +762,13 @@ std::vector<MatchResults> MapMatcher::OfflineMatch(const std::vector<Measurement
+@@ -752,6 +762,17 @@ std::vector<MatchResults> MapMatcher::OfflineMatch(const std::vector<Measurement
        break;
      }
  
 +    // Paths come cheapest-first, so once the next one costs more than the band above the best
-+    // path no alternate inside the band can follow: stop instead of skipping duplicates
++    // path no alternate inside the band can follow: stop instead of skipping duplicates. Compared
++    // as the float scores a caller is shown (MatchResults::score), in double, so the band means
++    // the same at any score magnitude.
 +    if (!best_paths.empty() && config_.topk.cost_band >= 0.f &&
-+        accumulated_cost > best_paths.front().score + config_.topk.cost_band) {
++        static_cast<double>(static_cast<float>(accumulated_cost)) -
++                static_cast<double>(best_paths.front().score) >
++            static_cast<double>(config_.topk.cost_band)) {
 +      break;
 +    }
 +
