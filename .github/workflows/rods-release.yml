@@ -503,6 +503,22 @@ jobs:
           name: valhalla-aar
           path: assets
 
+      # The AAR's .so files are stripped. Keep the unstripped (symbol-table) libraries of the same
+      # build as a release asset: the only symbol source for Android native crash symbolication.
+      - name: Download unstripped JNI libs
+        uses: actions/download-artifact@v4
+        with:
+          name: valhalla-jniLibs
+          path: unstripped
+
+      - name: Name the unstripped JNI libs after the release
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
+          mv unstripped/valhalla-jniLibs.zip "assets/valhalla-jniLibs-unstripped-$RELEASE_TAG.zip"
+
       - name: Generate SHA-256 checksums
         run: |
           cd assets
