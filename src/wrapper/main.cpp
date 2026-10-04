@@ -209,7 +209,7 @@ Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceAttributesCancellable(JNIEnv* 
 
 // Touches no actor: safe from any thread, during a call, and after close().
 extern "C" JNIEXPORT void JNICALL
-Java_com_valhalla_valhalla_ValhallaRaw_nativeCancelTrace(JNIEnv*, jobject, jlong token) {
+Java_com_valhalla_valhalla_ValhallaRaw_nativeCancelTrace(JNIEnv*, jclass, jlong token) {
     ValhallaActor::cancelTrace(static_cast<int64_t>(token));
 }
 // --- end ValhallaRaw JNI surface ------------------------------------------------------------

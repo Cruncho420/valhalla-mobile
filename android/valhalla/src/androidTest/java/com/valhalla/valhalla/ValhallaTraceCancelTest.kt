@@ -43,10 +43,12 @@ class ValhallaTraceCancelTest {
       assertTrue(JSONObject(plain).has("raw_score"))
       // An uncancelled token answers exactly what the plain call answers.
       assertEquals(plain, actor.traceAttributes(request, 101))
-      // Cancelled before it starts: the first interrupt poll ends it.
-      actor.cancelTrace(102)
-      val cancelled = JSONObject(actor.traceAttributes(request, 102))
-      assertEquals(-2, cancelled.getInt("code"))
+      // Cancelled before it starts: the first interrupt poll ends it. Two pending cancels do not
+      // erase each other (the second one must not un-cancel the first).
+      ValhallaRaw.cancelTrace(102)
+      ValhallaRaw.cancelTrace(106)
+      assertEquals(-2, JSONObject(actor.traceAttributes(request, 102)).getInt("code"))
+      assertEquals(-2, JSONObject(actor.traceAttributes(request, 106)).getInt("code"))
       // A cancel names one call: 103 runs to its answer while 102 is still the cancelled token.
       assertEquals(plain, actor.traceAttributes(request, 103))
       // Same actor after a cancel: the plain path and route are unchanged.
@@ -57,9 +59,14 @@ class ValhallaTraceCancelTest {
 
   @Test
   fun cancelNeedsNoActorAndTokensMustBePositive() {
+    ValhallaRaw.cancelTrace(107) // no actor exists yet: still recorded for the call that carries 107
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    ValhallaRaw(TestFileUtils.getConfigPath(context)).use { live ->
+      assertEquals(-2, JSONObject(live.traceAttributes(attributesRequest(live), 107)).getInt("code"))
+    }
     val actor = ValhallaRaw("missing-config.json")
     actor.close()
-    actor.cancelTrace(104) // touches no actor: fine after close
+    ValhallaRaw.cancelTrace(104) // touches no actor: fine after close
     assertThrows(IllegalArgumentException::class.java) { actor.traceAttributes("{}", 0) }
     assertThrows(IllegalStateException::class.java) { actor.traceAttributes("{}", 105) }
   }

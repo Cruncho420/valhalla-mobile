@@ -14,6 +14,8 @@ final class TestTraceCancel: XCTestCase {
     }
 
     func testCancelStopsOnlyItsOwnCallAndTheActorSurvives() throws {
+        // A cancel needs no actor: recorded before one exists, for the call that will carry 207.
+        Valhalla.cancelTrace(207)
         let tiles = Bundle.module.resourceURL!.appendingPathComponent("TestData/valhalla_tiles")
         let actor = try Valhalla(ValhallaConfig(tilesDir: tiles))
         let routeRequest = #"{"locations":[{"lat":42.5063,"lon":1.5218},{"lat":42.5086,"lon":1.5394}],"costing":"auto"}"#
@@ -28,9 +30,13 @@ final class TestTraceCancel: XCTestCase {
         XCTAssertNotNil(try object(plain)["raw_score"])
         // An uncancelled token answers exactly what the plain call answers.
         XCTAssertEqual(actor.traceAttributes(rawRequest: request, token: 201), plain)
-        // Cancelled before it starts: the first interrupt poll ends it.
+        // Cancelled before it starts: the first interrupt poll ends it. Two pending cancels do not
+        // erase each other.
         Valhalla.cancelTrace(202)
+        Valhalla.cancelTrace(206)
         XCTAssertEqual(try object(actor.traceAttributes(rawRequest: request, token: 202))["code"] as? Int, -2)
+        XCTAssertEqual(try object(actor.traceAttributes(rawRequest: request, token: 206))["code"] as? Int, -2)
+        XCTAssertEqual(try object(actor.traceAttributes(rawRequest: request, token: 207))["code"] as? Int, -2)
         // A cancel names one call: 203 runs to its answer.
         XCTAssertEqual(actor.traceAttributes(rawRequest: request, token: 203), plain)
         // Same actor after a cancel.

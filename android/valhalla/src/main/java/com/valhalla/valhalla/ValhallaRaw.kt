@@ -113,15 +113,6 @@ class ValhallaRaw(private val configPath: String) : AutoCloseable {
   }
 
   /**
-   * Cancel the cancellable [traceAttributes] call carrying [token] — running now, or later. NOT
-   * synchronized (it must not wait for the call it stops) and touches no native actor, so it is
-   * safe during a call and after [close].
-   */
-  fun cancelTrace(token: Long) {
-    nativeCancelTrace(token)
-  }
-
-  /**
    * Destroy the native actor deterministically. Idempotent — second and later calls are no-ops.
    * After close, [route] throws [IllegalStateException].
    */
@@ -150,9 +141,26 @@ class ValhallaRaw(private val configPath: String) : AutoCloseable {
   /** Cancellable trace_attributes: response/error JSON, `{"code":-2,…}` when cancelled. */
   private external fun nativeTraceAttributesCancellable(actorHandle: Long, request: String, token: Long): String
 
-  /** Marks [token] cancelled process-wide; touches no actor. */
-  private external fun nativeCancelTrace(token: Long)
 
   /** Deletes the native ValhallaActor behind [actorHandle]. At most once per handle. */
   private external fun nativeDestroyActor(actorHandle: Long)
+
+  companion object {
+    /**
+     * Cancel the cancellable [traceAttributes] call carrying [token] — running now, queued, or not
+     * yet started. Static and unsynchronized: it must not wait for the call it stops, and it needs no
+     * actor (safe before one exists, during a call, and after [close]).
+     */
+    @JvmStatic
+    fun cancelTrace(token: Long) {
+      try {
+        nativeCancelTrace(token)
+      } catch (_: UnsatisfiedLinkError) {
+        // The engine library was never loaded in this process, so no call can be running.
+      }
+    }
+
+    /** Marks [token] cancelled process-wide; touches no actor. */
+    @JvmStatic private external fun nativeCancelTrace(token: Long)
+  }
 }

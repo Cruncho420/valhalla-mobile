@@ -45,7 +45,7 @@ JNIEXPORT jstring JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeTraceAttr
                                                 jlong jToken);
 
 JNIEXPORT void JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeCancelTrace(JNIEnv *env,
-                                                jobject thiz,
+                                                jclass clazz,
                                                 jlong jToken);
 
 JNIEXPORT void JNICALL Java_com_valhalla_valhalla_ValhallaRaw_nativeDestroyActor(JNIEnv *env,

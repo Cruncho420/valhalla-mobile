@@ -1,3 +1,4 @@
+#include <array>
 #include <atomic>
 #include <boost/property_tree/ptree.hpp>
 #include <valhalla/tyr/actor.h>
@@ -88,22 +89,33 @@ std::string ValhallaActor::traceAttributes(const std::string& request) {
 }
 
 namespace {
-// One process-wide slot: the most recently cancelled token. Callers hand out unique tokens, so
-// "the slot holds my token" means "I was cancelled" whatever else ran in between.
-std::atomic<int64_t> cancelled_trace_token{0};
+// The most recently cancelled tokens, process-wide (a small ring, so one cancel cannot erase another that its call
+// has not polled yet). Callers hand out unique tokens, so "my token is in the ring" means "I was cancelled".
+// ponytail: 8 slots; more than 8 cancels landing before one call's next poll would need a per-call flag instead.
+constexpr size_t kCancelSlots = 8;
+std::array<std::atomic<int64_t>, kCancelSlots> cancelled_tokens{};
+std::atomic<size_t> next_cancel_slot{0};
+
+bool is_cancelled(int64_t token) {
+    if (token <= 0) return false;
+    for (const auto& slot : cancelled_tokens) {
+        if (slot.load(std::memory_order_relaxed) == token) return true;
+    }
+    return false;
+}
 } // namespace
 
 void ValhallaActor::cancelTrace(int64_t token) {
-    cancelled_trace_token.store(token, std::memory_order_relaxed);
+    if (token <= 0) return;
+    cancelled_tokens[next_cancel_slot.fetch_add(1, std::memory_order_relaxed) % kCancelSlots]
+        .store(token, std::memory_order_relaxed);
 }
 
 std::string ValhallaActor::traceAttributes(const std::string& request, int64_t token) {
     trace_token = token;
     if (!trace_interrupt) {
         trace_interrupt = [this] {
-            if (trace_token > 0 && cancelled_trace_token.load(std::memory_order_relaxed) == trace_token) {
-                throw TraceCancelled{};
-            }
+            if (is_cancelled(trace_token)) throw TraceCancelled{};
         };
     }
     try {
@@ -111,10 +123,10 @@ std::string ValhallaActor::traceAttributes(const std::string& request, int64_t t
         trace_token = 0;
         return result;
     } catch (...) {
-        // The core wraps whatever the interrupt throws (meili's failure becomes a 444 "no match"),
-        // so a cancelled call is recognised by its token, not by the exception that surfaced.
-        const bool cancelled = trace_token > 0 &&
-            cancelled_trace_token.load(std::memory_order_relaxed) == trace_token;
+        // Recognised by its token, not by the exception that surfaced: TraceCancelled is not a
+        // std::exception, but a core catch (...) on the way (e.g. route_match before its map_match
+        // fallback) may swallow it and something else surface instead.
+        const bool cancelled = is_cancelled(trace_token);
         trace_token = 0;
         if (cancelled) throw TraceCancelled{};
         throw;

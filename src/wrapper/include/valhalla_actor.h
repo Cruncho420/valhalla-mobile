@@ -49,9 +49,10 @@ public:
     // Same as traceAttributes, but cancelTrace(token) from ANY thread ends it at the engine's next
     // interrupt poll (at most one search round of further work) with TraceCancelled. token > 0.
     std::string traceAttributes(const std::string& request, int64_t token);
-    // Cancels the cancellable call carrying `token`, now or when it starts; never touches an actor
-    // (safe while another thread is inside a call, or after the actor is gone). A token is the
-    // caller's own unique id: a cancel for one call can never stop another.
+    // Cancels the cancellable call carrying `token`, now or when it starts (it stays marked among the
+    // last 8 cancels); never touches an actor (safe while another thread is inside a call, before the
+    // actor exists, or after it is gone). A token is the caller's own unique id: a cancel for one call
+    // can never stop another.
     static void cancelTrace(int64_t token);
 };
 
