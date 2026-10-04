@@ -538,6 +538,9 @@ jobs:
           draft: false
           prerelease: true
           tag_name: ${{ inputs.tag_name }}
+          # Tag the commit the binaries were built from, not the default branch (k21/r2/r3/r5 were
+          # tagged on main's 1692c2af and had to be re-tagged by hand).
+          target_commitish: ${{ github.sha }}
           generate_release_notes: false
           body: |
             Rods rebuild of valhalla-mobile 0.5.1.
