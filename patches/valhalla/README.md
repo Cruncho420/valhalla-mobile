@@ -48,6 +48,9 @@ An exactly patched tree is accepted without rewriting it.
 Any other combination, including a partially patched tree, is a checksum mismatch and is never
 rewritten.
 A shared Git-directory lock serializes concurrent architecture preparation.
+A core prepared by an earlier series (for example r4's `0001` alone) is a partial tree to this gate and is
+refused, not upgraded: restore the listed sources first (`git -C src/valhalla checkout -- <the six listed files>`),
+then configure again.
 Tracked edits outside the listed sources, staged edits, nonignored untracked files,
 file-mode changes, and failed patch operations stop the build;
 the helper never resets or overwrites unexpected work.
