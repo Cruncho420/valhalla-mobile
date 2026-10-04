@@ -1,0 +1,147 @@
+Rods downstream patch 0002 (FEAT-090, engine release rods-0.5.1-k21-r5). Applies on top of valhalla e2f017b16080 +
+0001-meili-stateful-terminal-segment.patch. Bounds meili's top-k (alternates) map-matching search:
+- meili.default.alternates_cost_band: stop looking for alternates once the next path costs more than the best path plus
+  the band (paths come cheapest-first, so nothing inside the band can follow). Negative (default) = off.
+- meili.default.alternates_max_iterations: after that many search rounds refuse the request with the new error 447
+  "Map Match alternates search exceeded its bound" (trace_attributes passes 447 through; every other failure is still
+  444). 0 (default) = unbounded.
+- every round polls the caller's interrupt (the server's request timeout now stops the search). Not config-gated.
+A request asking for no alternates runs exactly one round and is unaffected by all three.
+
+diff --git a/src/exceptions.cc b/src/exceptions.cc
+index d56102c..b6e0c36 100644
+--- a/src/exceptions.cc
++++ b/src/exceptions.cc
+@@ -120,6 +120,7 @@ const std::unordered_map<unsigned, valhalla::valhalla_exception_t> error_codes{
+     {444, {444, "Map Match algorithm failed to find path", 400, HTTP_400, OSRM_NO_SEGMENT, "map_match_failed"}},
+     {445, {445, "Shape match algorithm specification in api request is incorrect. Please see documentation for valid shape_match input.", 400, HTTP_400, OSRM_INVALID_URL, "wrong_match_type"}},
+     {446, {446, "Remote tar file has changed, service is unavailable", 500, HTTP_500, OSRM_SERVER_ERROR, "remote_tar_changed"}},
++    {447, {447, "Map Match alternates search exceeded its bound", 400, HTTP_400, OSRM_NO_SEGMENT, "map_match_alternates_bounded"}},
+     {499, {499, "Unknown", 500, HTTP_500, OSRM_INVALID_URL, "unknown"}},
+     {503, {503, "Leg count mismatch", 400, HTTP_400, OSRM_INVALID_URL, "wrong_number_of_legs"}},
+     {504, {504, "This service does not support GeoTIFF serialization.", 400, HTTP_400, OSRM_INVALID_VALUE, "unknown"}},
+diff --git a/src/meili/config.cc b/src/meili/config.cc
+index bbb5c21..86e7754 100644
+--- a/src/meili/config.cc
++++ b/src/meili/config.cc
+@@ -37,6 +37,7 @@ void Config::Read(const boost::property_tree::ptree& params) {
+   transition_cost.Read(params);
+   emission_cost.Read(params);
+   routing.Read(params);
++  topk.Read(params);
+ }
+ 
+ void Config::CandidateSearch::Read(const boost::property_tree::ptree& params) {
+@@ -98,6 +99,12 @@ void Config::EmissionCost::Read(const boost::property_tree::ptree& params) {
+   }
+ }
+ 
++void Config::TopK::Read(const boost::property_tree::ptree& params) {
++  ReadParamOptional(cost_band, params, "default.alternates_cost_band");
++  ReadParamOptional(max_iterations, params, "default.alternates_max_iterations");
++  CHECK_THROWS(max_iterations >= 0, NONNEGATIVE_VALUE_MSG(max_iterations, "alternates_max_iterations"));
++}
++
+ void Config::Routing::Read(const boost::property_tree::ptree& params) {
+   ReadParamOptional(interpolation_distance_meters, params, "default.interpolation_distance");
+   CHECK_THROWS(interpolation_distance_meters > 0.f,
+diff --git a/src/meili/map_matcher.cc b/src/meili/map_matcher.cc
+index 99a1ae9..677c1a5 100644
+--- a/src/meili/map_matcher.cc
++++ b/src/meili/map_matcher.cc
+@@ -719,7 +719,17 @@ std::vector<MatchResults> MapMatcher::OfflineMatch(const std::vector<Measurement
+   // For k paths
+   std::vector<StateId> state_ids;
+   state_ids.reserve(container_.size());
++  int searched = 0;
+   while (best_paths.size() < k && !found_discontinuity) {
++    // Each round can be long on a dense network: let a caller's interrupt (the server's request
++    // timeout) stop it, and refuse rather than let skipped duplicates grow the graph without end.
++    // 447 is its own status so a caller can tell "bounded out" from "no match" (444).
++    if (interrupt_) {
++      (*interrupt_)();
++    }
++    if (config_.topk.max_iterations > 0 && ++searched > config_.topk.max_iterations) {
++      throw valhalla_exception_t{447};
++    }
+     // Get the states for the kth best path in reversed order then fix the order
+     state_ids.clear();
+     double accumulated_cost = 0.f;
+@@ -752,6 +762,13 @@ std::vector<MatchResults> MapMatcher::OfflineMatch(const std::vector<Measurement
+       break;
+     }
+ 
++    // Paths come cheapest-first, so once the next one costs more than the band above the best
++    // path no alternate inside the band can follow: stop instead of skipping duplicates
++    if (!best_paths.empty() && config_.topk.cost_band >= 0.f &&
++        accumulated_cost > best_paths.front().score + config_.topk.cost_band) {
++      break;
++    }
++
+     // Get back the real state ids in order
+     std::vector<StateId> original_state_ids;
+     original_state_ids.reserve(state_ids.size());
+diff --git a/src/thor/trace_attributes_action.cc b/src/thor/trace_attributes_action.cc
+index 2c36df6..07e5c14 100644
+--- a/src/thor/trace_attributes_action.cc
++++ b/src/thor/trace_attributes_action.cc
+@@ -59,6 +59,14 @@ std::string thor_worker_t::trace_attributes(Api& request) {
+     case ShapeMatch::map_snap:
+       try {
+         map_match_results = map_match(request);
++      } catch (const valhalla_exception_t& e) {
++        // a bounded alternates search keeps its own code; every other failure stays 444
++        if (e.code == 447) {
++          throw;
++        }
++        throw valhalla_exception_t{
++            444, ShapeMatch_Enum_Name(options.shape_match()) +
++                     " algorithm failed to snap the shape points to the correct shape."};
+       } catch (const std::exception& e) {
+         throw valhalla_exception_t{
+             444, ShapeMatch_Enum_Name(options.shape_match()) +
+@@ -78,6 +86,13 @@ std::string thor_worker_t::trace_attributes(Api& request) {
+                  " algorithm failed to find exact route match; Falling back to map_match...");
+         try {
+           map_match_results = map_match(request);
++        } catch (const valhalla_exception_t& e) {
++          if (e.code == 447) {
++            throw;
++          }
++          throw valhalla_exception_t{
++              444, ShapeMatch_Enum_Name(options.shape_match()) +
++                       " algorithm failed to snap the shape points to the correct shape."};
+         } catch (const std::exception& e) {
+           throw valhalla_exception_t{
+               444, ShapeMatch_Enum_Name(options.shape_match()) +
+diff --git a/valhalla/meili/config.h b/valhalla/meili/config.h
+index d1c6cfe..1965dd3 100644
+--- a/valhalla/meili/config.h
++++ b/valhalla/meili/config.h
+@@ -66,10 +66,26 @@ struct Config {
+     void Read(const boost::property_tree::ptree& params);
+   };
+ 
++  // Bounds on the top-k (alternates) search. The search finds paths cheapest-first and skips
++  // a path whose edges duplicate one already found; on dense road networks it can skip
++  // thousands of near-identical state sequences before the next distinct path, each one
++  // enlarging the search graph (time and memory grow with the square of the skips).
++  struct TopK {
++    // stop looking for alternates once the next path costs more than the best path plus this;
++    // negative (the default) never stops early
++    float cost_band = -1.f;
++    // refuse the request (error 447) when the search takes more than this many rounds; 0 (default)
++    // = unbounded
++    int max_iterations = 0;
++
++    void Read(const boost::property_tree::ptree& params);
++  };
++
+   CandidateSearch candidate_search{};
+   TransitionCost transition_cost{};
+   EmissionCost emission_cost{};
+   Routing routing{};
++  TopK topk{};
+ };
+ 
+ } // namespace meili
