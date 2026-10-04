@@ -28,7 +28,9 @@ class ValhallaTraceCancelTest {
         .put("encoded_polyline", shape)
         .put("costing", "auto")
         .put("shape_match", "map_snap")
-        .put("alternates", 1)
+        // No alternates: the route's shape is longer than service_limits.trace.max_alternates_shape. A
+        // one-path match still polls the interrupt before its (only) search round.
+        .put("alternates", 0)
         .put("filters", JSONObject().put("action", "include")
             .put("attributes", JSONArray(listOf("shape", "raw_score", "matched.type"))))
         .toString()
@@ -40,7 +42,7 @@ class ValhallaTraceCancelTest {
     ValhallaRaw(TestFileUtils.getConfigPath(context)).use { actor ->
       val request = attributesRequest(actor)
       val plain = actor.traceAttributes(request)
-      assertTrue(JSONObject(plain).has("raw_score"))
+      assertTrue(plain, JSONObject(plain).has("raw_score"))
       // An uncancelled token answers exactly what the plain call answers.
       assertEquals(plain, actor.traceAttributes(request, 101))
       // Cancelled before it starts: the first interrupt poll ends it. Two pending cancels do not

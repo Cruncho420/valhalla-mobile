@@ -22,12 +22,12 @@ final class TestTraceCancel: XCTestCase {
         let route = try XCTUnwrap(object(actor.route(rawRequest: routeRequest))["trip"] as? [String: Any])
         let shape = try XCTUnwrap((route["legs"] as? [[String: Any]])?.first?["shape"] as? String)
         let request = String(decoding: try JSONSerialization.data(withJSONObject: [
-            "encoded_polyline": shape, "costing": "auto", "shape_match": "map_snap", "alternates": 1,
+            "encoded_polyline": shape, "costing": "auto", "shape_match": "map_snap", "alternates": 0, // longer than max_alternates_shape
             "filters": ["action": "include", "attributes": ["shape", "raw_score", "matched.type"]],
         ]), as: UTF8.self)
 
         let plain = actor.traceAttributes(rawRequest: request)
-        XCTAssertNotNil(try object(plain)["raw_score"])
+        XCTAssertNotNil(try object(plain)["raw_score"], plain)
         // An uncancelled token answers exactly what the plain call answers.
         XCTAssertEqual(actor.traceAttributes(rawRequest: request, token: 201), plain)
         // Cancelled before it starts: the first interrupt poll ends it. Two pending cancels do not
