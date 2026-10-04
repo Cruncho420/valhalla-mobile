@@ -41,7 +41,9 @@ and verifies every patch's SHA-256.
 If every listed core source has its original SHA-256, it concatenates the hash-checked patch bytes
 into one input inside the core's Git directory, runs `git apply --check` and then `git apply` on
 that single input (all of it or nothing; separate patch-file arguments would be written one by
-one), and requires every listed source to reach its patched SHA-256.
+one), and requires every listed source to reach its patched SHA-256 with no other change; if the
+applied result is anything else (a wrong manifest hash, a file the manifest does not list), the series is
+reversed with `git apply -R` before the build fails, so the core is left exactly as it was found.
 An exactly patched tree is accepted without rewriting it.
 Any other combination, including a partially patched tree, is a checksum mismatch and is never
 rewritten.

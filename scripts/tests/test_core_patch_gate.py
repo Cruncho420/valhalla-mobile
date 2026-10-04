@@ -198,6 +198,35 @@ class PatchGateTests(unittest.TestCase):
                 self.assertEqual(before, self.contents())
                 self.assertEqual(git(self.core, "status", "--porcelain"), "")
 
+    def test_applied_series_with_a_wrong_result_hash_is_reversed(self):
+        # The series applies, but the manifest names a different patched result: the gate must put the
+        # original bytes back before failing, never leave a patched-but-unreviewed core behind.
+        manifest = self.root / "patches/valhalla/manifest.cmake"
+        manifest.write_text(manifest.read_text().replace(
+            "99407a309247b2855dcba3a2894579946112dc8297613303468596446a73ac87", "0" * 64))
+        git(self.root, "commit", "-qam", "wrong patched hash")
+        before = self.contents()
+        self.rejected(self.gate(), "core source checksum mismatch")
+        self.assertEqual(before, self.contents())
+        self.assertEqual(git(self.core, "status", "--porcelain"), "")
+
+    def test_applied_series_adding_an_unlisted_file_is_reversed(self):
+        # A patch that creates a file the manifest does not list is reversed (the new file removed).
+        extra = ("diff --git a/src/meili/unlisted.cc b/src/meili/unlisted.cc\nnew file mode 100644\n"
+                 "--- /dev/null\n+++ b/src/meili/unlisted.cc\n@@ -0,0 +1 @@\n+// unlisted\n")
+        patch = self.root / "patches/valhalla/0002-meili-bounded-topk.patch"
+        patch.write_text(patch.read_text() + extra)
+        manifest = self.root / "patches/valhalla/manifest.cmake"
+        manifest.write_text(manifest.read_text().replace(
+            "a7700f3fc009b413a5afdcc9d7fae43670624816137429a36170d191e6e2a86d",
+            hashlib.sha256(patch.read_bytes()).hexdigest()))
+        git(self.root, "commit", "-qam", "patch adds an unlisted file")
+        before = self.contents()
+        self.rejected(self.gate(), "unexpected untracked core files")
+        self.assertEqual(before, self.contents())
+        self.assertFalse((self.core / "src/meili/unlisted.cc").exists())
+        self.assertEqual(git(self.core, "status", "--porcelain"), "")
+
     def test_missing_initialized_core(self):
         (self.core / ".git").rename(self.core / "fixture-git-hidden")
         self.rejected(self.gate(), "initialized regular source")
