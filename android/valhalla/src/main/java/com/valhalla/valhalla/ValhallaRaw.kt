@@ -153,11 +153,10 @@ class ValhallaRaw(private val configPath: String) : AutoCloseable {
      */
     @JvmStatic
     fun cancelTrace(token: Long) {
-      try {
-        nativeCancelTrace(token)
-      } catch (_: UnsatisfiedLinkError) {
-        // The engine library was never loaded in this process, so no call can be running.
-      }
+      // Same library the actor uses (ValhallaKotlin's companion loads it; loading twice is a no-op),
+      // so a cancel recorded before any actor exists still reaches the call that later carries it.
+      System.loadLibrary("valhalla-wrapper")
+      nativeCancelTrace(token)
     }
 
     /** Marks [token] cancelled process-wide; touches no actor. */
